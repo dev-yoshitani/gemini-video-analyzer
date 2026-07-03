@@ -228,12 +228,13 @@ class KeySlideExtractor:
     # Gemini API フレーム解析
     # ============================================================
 
-    def analyze_frame_with_gemini(self, frame_path, client):
+    def analyze_frame_with_gemini(self, frame_path, client, transcript_text=None):
         """1枚のフレーム画像をGemini APIで解析する。
 
         Args:
             frame_path (str): フレーム画像のパス
             client: google.genai.Client インスタンス
+            transcript_text (str, optional): 音声文字起こし全文（文脈として使用）
 
         Returns:
             dict: 解析結果。失敗時はデフォルト値を返す。
@@ -247,22 +248,38 @@ class KeySlideExtractor:
             "reason": "analysis failed or skipped",
         }
 
-        prompt = """Analyze this video frame image. Return ONLY a JSON object (no markdown, no explanation) with exactly these fields:
+        # 文脈テキスト（文字起こし全文）をプロンプトに埋め込む
+        context_section = ""
+        if transcript_text and transcript_text.strip():
+            # 長すぎる場合は先頭・末尾を取り出して要約的に使う
+            max_context_chars = 8000
+            if len(transcript_text) > max_context_chars:
+                head = transcript_text[:4000]
+                tail = transcript_text[-4000:]
+                context_text = f"{head}\n...（中略）...\n{tail}"
+            else:
+                context_text = transcript_text
+            context_section = f"""\n\n【この動画の文字起こし全文（発表者の発言内容）】\n{context_text}\n\n上記の文脈・発言内容を十分に考慮した上で、以下の画像を解析してください。"""
 
-{
-  "is_key_slide": true or false,
-  "importance_score": 0 to 100,
-  "frame_type": "slide" or "chart" or "document" or "whiteboard" or "screen_share" or "speaker_view" or "other",
-  "summary": "short description of the visual content",
-  "detected_text": "any visible text in the image, or empty string if none",
-  "reason": "brief explanation of why this frame is or is not a key slide"
-}
+        prompt = f"""あなたはプロフェッショナルな議事録作成アシスタントです。{context_section}
 
-Rules:
-- A "key slide" is a frame showing important visual content like presentation slides, charts, documents, or screen shares with meaningful content.
-- Speaker-only views, transition frames, or blank screens should NOT be key slides.
-- importance_score: 80-100 for clear slides/charts with text, 50-79 for partially useful frames, 0-49 for unimportant frames.
-- Return ONLY the JSON object, nothing else."""
+この画像は会議・プレゼンテーションの動画から抽出した1フレームです。
+以下のJSON形式のみで回答してください（マークダウンや余計な説明は一切不要）。
+
+{{
+  "is_key_slide": true か false,
+  "importance_score": 0〜100の整数,
+  "frame_type": "slide"（スライド）か "chart"（グラフ）か "document"（文書）か "whiteboard"（ホワイトボード）か "screen_share"（画面共有）か "speaker_view"（発表者映像）か "other"（その他）,
+  "summary": "このスライド・画像が表している内容を、上記の発表者の発言文脈と結びつけて【流暢な日本語で3〜5文程度、極めて詳細かつ具体的に】解説してください。グラフや図解が何を意味するか、発表者の意図や重要な結論も含めてください。",
+  "detected_text": "画像内に見えるタイトル・箇条書き・グラフの軸・重要な数値など、すべての主要テキストを【日本語の意味が通じるよう、単なる単語の羅列ではなく構造的に】抽出してください。例：【タイトル】〇〇 【要点】・〇〇 ・〇〇",
+  "reason": "このフレームをキースライドと判定した、または判定しなかった理由を【日本語で具体的に】説明してください。"
+}}
+
+【キースライドの判定基準】
+- キースライドとは：プレゼンスライド、グラフ、図解、重要な文書、意味のある画面共有など、視覚的に重要な情報を含むフレーム。
+- キースライドでないもの：発表者だけが映っている映像、画面の切り替わり、真っ黒な画面、ロード中の画面など。
+- importance_score：80〜100＝文字・グラフが明確で情報量が多い重要スライド、50〜79＝部分的に有用、0〜49＝重要度が低い。
+- すべての文字列フィールド（summary, detected_text, reason）は必ず日本語で出力してください。"""
 
         # 画像データを読み込む
         try:
@@ -342,11 +359,12 @@ Rules:
         # 全リトライ失敗
         return default_result
 
-    def analyze_all_frames(self, frames):
+    def analyze_all_frames(self, frames, transcript_text=None):
         """全フレームをGemini APIで解析する。
 
         Args:
             frames (list[dict]): フレーム情報リスト
+            transcript_text (str, optional): 音声文字起こし全文（文脈として各フレーム解析に使用）
 
         Returns:
             list[dict]: 解析結果が追加されたフレーム情報リスト
@@ -367,7 +385,10 @@ Rules:
         from google import genai
         client = genai.Client(api_key=self.api_key)
 
-        print(f"\nGemini APIでフレームを解析中... ({len(frames)} フレーム)")
+        if transcript_text:
+            print(f"\nGemini APIでフレームを解析中... ({len(frames)} フレーム) ※文字起こし全文を文脈として使用")
+        else:
+            print(f"\nGemini APIでフレームを解析中... ({len(frames)} フレーム)")
         analyzed = []
         skipped = 0
 
@@ -375,7 +396,7 @@ Rules:
             progress = f"[{i+1}/{len(frames)}]"
             print(f"  {progress} {frame['filename']} (t={frame['timestamp_str']})...", end=" ")
 
-            result = self.analyze_frame_with_gemini(frame["path"], client)
+            result = self.analyze_frame_with_gemini(frame["path"], client, transcript_text=transcript_text)
             frame["analysis"] = result
 
             if result["importance_score"] == 0 and result["reason"] == "analysis failed or skipped":
@@ -742,8 +763,9 @@ Rules:
             result["transcript_text"] = transcript_text
 
         # ---- Step 4: フレーム解析 ----
+        # 文字起こし全文を文脈として渡すことで、AIが発表者の意図を踏まえた深い解析を行う
         if frames:
-            frames = self.analyze_all_frames(frames)
+            frames = self.analyze_all_frames(frames, transcript_text=transcript_text)
 
             # ---- Step 5: 重複除外 ----
             frames = self.deduplicate_frames(frames)

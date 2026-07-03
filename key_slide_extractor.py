@@ -98,9 +98,13 @@ class KeySlideExtractor:
         self.importance_threshold = importance_threshold
         self.dry_run = dry_run
         self.skip_frame_analysis = skip_frame_analysis
-        self.output_dir = output_dir or os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "output"
-        )
+        import sys
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        self.output_dir = output_dir or os.path.join(base_dir, "output")
 
         # モデルフォールバックチェーン
         self._models_to_try = [self.model]

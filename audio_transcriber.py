@@ -43,12 +43,32 @@ CHUNK = 1024
 FORMAT_BITS = 16
 SAVE_RATE = 16000     # 保存時の目標サンプルレート（音声認識の標準品質）
 
+import sys
+
+# PyInstaller の --onefile モードで実行された場合、実行ファイルのディレクトリを取得する
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ============================================================
+# 定数と設定
+# ============================================================
 # 出力先ディレクトリ
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 
 # PDF設定
 PDF_FONT_SIZE = 11
 PDF_LINE_HEIGHT = 7
+
+# 環境変数の読み込み (同じフォルダにある .env を優先)
+def load_env_if_exists():
+    env_path = os.path.join(BASE_DIR, ".env")
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            
 
 
 # ============================================================
@@ -56,7 +76,7 @@ PDF_LINE_HEIGHT = 7
 # ============================================================
 def save_api_key_to_env(api_key_val):
     """APIキーを.envファイルに安全に保存（既存キーを置換）"""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    env_path = os.path.join(BASE_DIR, ".env")
     lines = []
     if os.path.exists(env_path):
         with open(env_path, "r", encoding="utf-8") as f:

@@ -614,15 +614,18 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         except Exception as e:
             err_str = str(e)
             last_error = err_str
-            if "503" in err_str or "UNAVAILABLE" in err_str:
-                print(f"モデル {model} が混雑中（503/UNAVAILABLE）です。")
+            if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                print(f"モデル {model} が制限または混雑中（429/503）です。")
                 if model != models_to_try[-1]:
                     print("別のモデルで再試行します...")
                     time.sleep(5)
+                else:
+                    # 最後のモデルでも429が出た場合は少し長めに待機してリトライを期待する
+                    time.sleep(10)
                 continue
             else:
                 print(f"APIエラーが発生しました: {e}")
-                # 503以外の致命的なエラーは他のモデルを試さずに終了
+                # 429/503以外の致命的なエラーは他のモデルを試さずに終了
                 break
 
     # 全モデルで失敗した場合はあきらめる

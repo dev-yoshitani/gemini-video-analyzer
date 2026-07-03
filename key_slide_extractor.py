@@ -299,7 +299,8 @@ class KeySlideExtractor:
         # リトライループ（最大3回）
         max_retries = 3
         for attempt in range(max_retries):
-            for model in self._models_to_try:
+            # リストをコピーしてイテレーションする（ループ中の要素削除によるスキップバグ防止）
+            for model in list(self._models_to_try):
                 try:
                     # 画像をPartとして送信
                     image_part = genai_types.Part.from_bytes(
@@ -345,11 +346,17 @@ class KeySlideExtractor:
                 except Exception as e:
                     err_str = str(e).lower()
                     if "503" in err_str or "unavailable" in err_str or "429" in err_str or "too many requests" in err_str or "resourceexhausted" in err_str:
+                        print(f"\n    [APIエラー] モデル {model} で制限/混雑が発生しました: {e}")
+                        if "429" in err_str or "resourceexhausted" in err_str:
+                            # 429 (Quota exceeded) の場合、以降のフレームでも失敗する可能性が高いのでリストから除外
+                            if len(self._models_to_try) > 1:
+                                print(f"    ※ 以降のフレーム解析では {model} をスキップします。")
+                                self._models_to_try.remove(model)
+                        
                         if model != self._models_to_try[-1] or "429" in err_str:
-                            # 429等のレート制限時は少し長めに待機
                             time.sleep(5)
                             continue
-                    # その他のエラーはリトライへ
+                    # その他の致命的なエラーはリトライへ（同じモデルで再試行）
                     break
 
             # リトライ前に少し待つ

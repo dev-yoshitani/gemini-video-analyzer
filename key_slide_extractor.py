@@ -143,7 +143,12 @@ class KeySlideExtractor:
                 capture_output=True, text=True, timeout=600,
             )
             if result.returncode != 0:
-                print(f"  音声抽出エラー: {result.stderr[:500]}")
+                # FFmpegのstderrはヘッダー（バージョン情報等）が長いので末尾を表示する
+                stderr_tail = result.stderr[-500:] if len(result.stderr) > 500 else result.stderr
+                print(f"  音声抽出エラー（詳細末尾）: {stderr_tail}")
+                # 音声ストリームがない場合を検知
+                if "does not contain" in result.stderr or "no audio" in result.stderr.lower() or "Output file #0 does not contain" in result.stderr:
+                    print("  ※ この動画には音声トラックが含まれていません（画面録画のみの場合等）。")
                 return False
 
             size_mb = os.path.getsize(output_audio_path) / (1024 * 1024)
@@ -740,8 +745,13 @@ class KeySlideExtractor:
         else:
             audio_path = os.path.join(output_subdir, f"audio_{timestamp}.wav")
             if not self.extract_audio_from_video(video_path, audio_path):
-                print("\nエラー: 動画からの音声抽出に失敗しました。")
-                return result
+                # 音声抽出に失敗した場合、provided_audio_path を再チェック（パスが渡されたがファイルがまだなかった等）
+                if provided_audio_path and os.path.exists(provided_audio_path):
+                    audio_path = provided_audio_path
+                    print("  → 事前録音された音声ファイルを代わりに使用します。")
+                else:
+                    print("\n警告: 動画からの音声抽出に失敗しました。フレーム解析のみで続行します。")
+                    audio_path = None
         result["audio_path"] = audio_path
 
         # ---- Step 2: フレーム抽出 ----
@@ -753,7 +763,7 @@ class KeySlideExtractor:
 
         # ---- Step 3: 音声の文字起こし ----
         transcript_text = None
-        if not self.dry_run:
+        if not self.dry_run and audio_path and os.path.exists(audio_path):
             print("\n" + "-" * 40)
             print("  音声の文字起こしを実行中...")
             print("-" * 40)
@@ -765,6 +775,8 @@ class KeySlideExtractor:
                 print(f"\n  文字起こし完了: {len(transcript_text)} 文字")
             else:
                 print("\n  警告: 文字起こし結果が空です。")
+        elif not self.dry_run and (not audio_path or not os.path.exists(audio_path or "")):
+            print("\n  ※ 音声ファイルがないため、文字起こしはスキップします。フレーム解析のみ行います。")
         else:
             transcript_text = "[dry-run] 文字起こしはスキップされました"
             result["transcript_text"] = transcript_text

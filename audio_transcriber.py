@@ -48,6 +48,9 @@ import sys
 # PyInstaller の --onefile モードで実行された場合、実行ファイルのディレクトリを取得する
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
+    # PyInstallerのエントリーポイントが循環インポートされる際の ModuleNotFoundError 回避
+    if __name__ == "__main__":
+        sys.modules['audio_transcriber'] = sys.modules['__main__']
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 

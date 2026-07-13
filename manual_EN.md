@@ -1,143 +1,124 @@
-# 🎙️ Gemini Voice Transcriber — User Manual
+# Gemini Video Analyzer - User Manual
 
-> This manual is designed for users of all technical levels.
-> **Simply download, extract, and start using it right away!**
-> Follow these steps to get the tool up and running on your Windows PC.
-
----
-
-## 📋 Features
-
-This tool captures computer internal audio (from meetings, lectures, videos, etc.) and **automatically transcribes it into structured PDF documents**.
-
-- Filler words (like "uhm", "uh", "like") are **automatically filtered out**.
-- The AI **automatically generates a title** based on the transcription content.
-- Large audio files are automatically compressed before uploading.
-
-```
-PC Audio → Auto Recording → Gemini AI Transcription → Formatted PDF Saved!
-```
-
----
-
-## 🗂️ Table of Contents
-
-1. [Initial Setup (First Time Only)](#1-initial-setup-first-time-only)
-2. [Record and Transcribe PC Audio (Real-time)](#2-record-and-transcribe-pc-audio-real-time)
-3. [Transcribe Existing Audio/Video Files](#3-transcribe-existing-audiovideo-files)
-4. [Video Frame Analysis (Key Slide Extraction)](#4-video-frame-analysis-key-slide-extraction)
-5. [Output Files](#5-output-files)
-6. [Troubleshooting Checklist](#6-troubleshooting-checklist)
-
----
-
-## 1. Initial Setup (First Time Only)
+This is the guide for the current release. The application records or opens a video, chooses scene candidates locally, and uses Gemini to create a transcript and text-based scene analysis report.
 
 > [!IMPORTANT]
-> You only need to perform these steps **once**. It takes about 5 minutes.
-
-### Get a Gemini API Key
-
-An API key is your personal password to access Google's Gemini AI.  
-> [!NOTE]
-> It is **completely free** for standard usage!
-
-1. Open your browser and visit:  
-   👉 **https://aistudio.google.com/apikey**
-2. Sign in with your Google account.
-   - ⚠️ **Important**: Work or school accounts (e.g., @company.com) often have administrative restrictions. If you get an error, click your profile icon in the top right and **switch to a personal Gmail account (@gmail.com)**.
-3. Click the blue **"Create API key"** button.
-4. Select "Create API key in a new project" if prompted.
-5. A long code starting with `AIzaSy...` will be displayed. This is your API key.
-   - Click the **"Copy"** button and copy it.
-
-That's it for the preparation!
-You will enter this API key directly into the application screen the very first time you start it. Please keep it copied.
+> This is not a fully local workflow. The original video stays on your PC, but the selected scene-candidate images and audio are sent to the Gemini API after you confirm the upload.
 
 ---
 
-## 2. Record and Transcribe PC Audio (Real-time)
+## 1. One-time setup
 
-### How to Start
+You need Windows 10/11, Python 3.10 or later, and a Gemini API key. API availability, quotas, and charges depend on your Google account and plan.
 
-Double-click the **`Start_Transcriber.bat`** file!
+1. Download the ZIP from GitHub Releases and extract it to a folder of your choice.
+2. Open PowerShell in that folder and run:
 
-### How to Record
+```powershell
+py -3 -m pip install -r requirements-app.txt
+```
 
-A command prompt window will appear with the following message:
-`>>> Enterキーを押して録音を開始...` (Press Enter to start recording...)
-
-1. **Press Enter** to start recording 🔴.
-2. Play the audio on your PC (start your video, meeting, etc.).
-3. **Press Enter again** when you want to stop recording.
-4. The tool will automatically save the audio, upload it to Gemini API, transcribe it, and generate a formatted PDF.
-
----
-
-## 3. Transcribe Existing Audio/Video Files
-
-If you already have audio/video files (mp3, wav, m4a, mp4, etc.):
-
-1. Drag and drop your audio or video file directly onto the **`Start_Transcriber.bat`** icon in File Explorer.
-2. The transcription and PDF generation will start automatically.
-
----
-
-## 4. 🌟 Video Frame Analysis (Key Slide Extraction)
-
-The AI can automatically extract **"Key Slides" (important scenes/charts)** from video files or screen recordings, summarizing them alongside the audio transcript to create a "Rich Minutes" markdown document. 
-
-### Option A: Extract from an Existing Video File
-**Drag and drop** a video file (`.mp4`, `.webm`, etc.) onto the **`Start_Transcriber.bat`** icon.
-A black command prompt window will open and ask:
-`キースライド（スライド画像）も抽出しますか？ [Y:する / N:しない（音声のみ）]` (Do you want to extract key slides? [Y:Yes / N:No])
-Press **Y** on your keyboard to start the fully automated slide extraction and audio transcription!
-
-### Option B: Record Screen and Extract Automatically (Best for Web Meetings)
-Double-click **`Start_Transcriber.bat`**.
-A black command prompt window will open, and your PC screen and audio recording will start simultaneously.
-Press `Enter` again when the meeting is over. The AI will scan the recorded video, find all important slides, and generate a Rich Minutes document linking the slides with the transcript.
+3. Create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey).
+4. The first time you launch `Start.bat`, enter the key when prompted. Never share your key with anyone else.
 
 > [!NOTE]
-> When using the Slide Extraction feature, the AI will generate a **PDF with slide summaries** (`[AI_Title]_Datetime.pdf`), along with a Markdown version (`[AI_Title]_Datetime.md`).
+> If the `py` command is not found, install Python 3.10 or later, enable “Add Python to PATH” in the installer, and try again.
 
 ---
 
-## 5. Output Files
+## 2. Everyday use
 
-Once processing completes, files are saved in the **`output`** folder:
+Double-click `Start.bat` and select an item from the menu.
 
-| Filename | Description |
+| Number | Action |
 |---|---|
-| `recording_Datetime.wav` | The raw recorded audio file (Recording mode only). |
-| `[AI_Generated_Title]_Datetime.pdf` | 📄 **The formatted PDF transcript (Main output).** |
+| 1 | Record and create an AI analysis PDF |
+| 2 | Analyze a saved video and create an AI analysis PDF |
+| 3 | Resume an interrupted high-accuracy analysis |
+| 4 | Use the legacy audio-only transcription workflow |
 
-> [!NOTE]
-> The PDF filename and title are automatically generated by the AI based on the conversation content (e.g., `TeamMeeting_20260627_140000.pdf`).
+You can also drag a video file onto `Start.bat` to start high-accuracy analysis of that video.
+
+### Record and analyze
+
+1. Select `1` from the menu.
+2. Choose the whole desktop, one monitor, or a mouse-selected area.
+3. Press Enter to start recording, then press Enter again to stop.
+4. The app prepares scene candidates and audio locally, then displays a confirmation before anything is sent to Gemini.
+
+Before recording, make sure notifications, private chats, passwords, and other sensitive information are not visible in the chosen area. Obtain any necessary consent before recording a meeting.
+
+### Analyze a saved video
+
+1. Select `2`, or drag the video onto `Start.bat`.
+2. Choose the video and review the upload confirmation.
+3. Wait for completion. If processing stops, use item `3` on the next launch to resume it.
 
 ---
 
-## 6. Troubleshooting Checklist
+## 3. What is sent to Gemini
 
-### ❌ Error: "API Key not set"
-- Did you enter and save the API key correctly when prompted?
-- Are there any extra spaces in the key?
-
-### ❌ Error: "No loopback device found"
-- Are your PC speakers or headphones plugged in and working?
-- Go to Windows "Sound Settings" and make sure your output device is set to your active speakers.
-
-### ❌ Low Transcription Accuracy / Weird Text Output
-- Was the PC volume loud enough during recording?
-- Did you record silence? (Recording with no audio playing causes the AI to hallucinate words).
+- The complete original video is never uploaded to Gemini.
+- The app sends locally selected scene-candidate images and audio for transcription after confirmation.
+- Gemini 3.5 Flash is the default. If it is rate-limited or busy, the app automatically falls back to Gemini 2.5 Flash and then Gemini 3.1 Flash-Lite.
+- Original video, extracted images, audio, and analysis results remain on your PC. Delete them yourself when they are no longer needed.
 
 ---
 
-## 👥 How to Share This Tool
+## 4. Output files
 
-You can share this tool simply by **sending the folder** (as a ZIP file) to others.
+For recordings, files are saved under `output/local_recordings/録画_datetime/`. For a saved video, the app creates `video-name_解析結果_datetime/` next to the source video.
 
-- **No Configuration Needed**: The batch files automatically detect their paths, so they work out-of-the-box anywhere.
-- **Important Note**:
-  - Delete files in the `output` folder before sharing to protect your privacy.
-  - **Do not share your API key**. Receivers must obtain and configure their own API keys (refer to Initial Setup).
+| File or folder | Purpose |
+|---|---|
+| `画面録画.mp4` or `画面録画.avi` | Original video captured by the recording mode |
+| `PC音声.wav` or `解析用音声.wav` | Audio used for transcription |
+| `抽出シーン/` | Scene-candidate images chosen locally |
+| `文字起こし.txt` | Full Gemini transcript |
+| `title_解析レポート.pdf` | PDF containing scene timestamps, importance, descriptions, detected text, and the transcript |
+| `title_解析レポート.md` | Editable Markdown report |
+| `画像解析結果.json` | JSON scene-analysis data for use with other AI tools or software |
+
+The PDF does not embed the scene images. It contains their timestamps, importance, analysis results, and important detected text in a readable report.
+
+---
+
+## 5. Resume interrupted work
+
+If a rate limit, network error, or app close interrupts processing, completed scene extraction, transcription, and image analysis are saved automatically.
+
+1. Open `Start.bat`.
+2. Select `3`.
+3. Choose the video analysis to resume.
+
+Completed work is reused, so you do not need to start from the beginning.
+
+---
+
+## 6. Troubleshooting
+
+### “No module named ...”
+
+Run the one-time setup command in the extracted folder:
+
+```powershell
+py -3 -m pip install -r requirements-app.txt
+```
+
+### API key is not configured
+
+Launch `Start.bat` and paste your own Gemini API key when prompted. If you accidentally expose a key, revoke it in Google AI Studio and create a new one.
+
+### Analysis stops partway through
+
+Check your network and Gemini quota, then resume from menu item `3`. If rate limits continue after the automatic model fallback, wait and try again later.
+
+### PC audio cannot be recorded
+
+In Windows Sound settings, confirm that your active speakers or headphones are selected. If you have just changed Bluetooth devices, close the app and open it again.
+
+---
+
+## 7. Sharing the app
+
+You can share the folder as a ZIP. Before you do, delete recordings, audio, and reports from `output`, and exclude `.env` if it exists. Each user must create and enter their own Gemini API key.

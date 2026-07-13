@@ -1,0 +1,3 @@
+# Complete application: recording, Gemini analysis, and PDF output
+-r requirements.txt
+-r requirements-local.txt

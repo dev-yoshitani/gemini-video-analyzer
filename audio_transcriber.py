@@ -527,6 +527,18 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         )
     print(f"  アップロード完了: {audio_file.name}")
 
+    def cleanup_uploaded_audio() -> None:
+        """Gemini上の一時音声とローカル変換ファイルを削除する。"""
+        try:
+            client.files.delete(name=audio_file.name)
+        except Exception:
+            pass
+        if converted_tmp and os.path.exists(converted_tmp):
+            try:
+                os.remove(converted_tmp)
+            except Exception:
+                pass
+
     # 処理完了を待機
     if progress_callback:
         progress_callback(3, "ファイルの処理を待機中...")
@@ -538,15 +550,17 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         wait_count += 1
         if wait_count > max_wait:
             print("ファイルの処理待ちがタイムアウトしました（30分経過）。処理を中止します。")
-            try:
-                client.files.delete(name=audio_file.name)
-            except Exception:
-                pass
+            cleanup_uploaded_audio()
             return None, None
-        audio_file = client.files.get(name=audio_file.name)
+        try:
+            audio_file = client.files.get(name=audio_file.name)
+        except Exception:
+            cleanup_uploaded_audio()
+            raise
 
     if audio_file.state.name == "FAILED":
         print("ファイルの処理に失敗しました。")
+        cleanup_uploaded_audio()
         return None, None
 
     # プロンプト作成
@@ -584,8 +598,8 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
     models_to_try = [GEMINI_MODEL]
     if GEMINI_MODEL != "gemini-2.5-flash":
         models_to_try.append("gemini-2.5-flash")
-    if "gemini-2.0-flash" not in models_to_try:
-        models_to_try.append("gemini-2.0-flash")
+    if "gemini-3.1-flash-lite" not in models_to_try:
+        models_to_try.append("gemini-3.1-flash-lite")
 
     response = None
     last_error = None
@@ -631,32 +645,11 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
     # 全モデルで失敗した場合はあきらめる
     if response is None:
         print(f"文字起こしに失敗しました（すべてのモデルが利用不可、またはエラー）: {last_error}")
-        try:
-            client.files.delete(name=audio_file.name)
-        except Exception:
-            pass
-        if converted_tmp and os.path.exists(converted_tmp):
-            try:
-                os.remove(converted_tmp)
-            except Exception:
-                pass
+        cleanup_uploaded_audio()
         return None, None
 
     elapsed = time.time() - start_time
     print(f"文字起こし完了！ (処理時間: {elapsed:.1f} 秒)")
-
-    # アップロードファイルを削除（Gemini側）
-    try:
-        client.files.delete(name=audio_file.name)
-    except Exception:
-        pass
-
-    # 変換した一時ファイルを削除（ローカル）
-    if converted_tmp and os.path.exists(converted_tmp):
-        try:
-            os.remove(converted_tmp)
-        except Exception:
-            pass
 
     # response.text が None/空の場合、partsから直接テキストを取得する（thinking モデル対策）
     full_text = response.text
@@ -671,12 +664,15 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
     if not full_text or not full_text.strip():
         finish = response.candidates[0].finish_reason if response.candidates else "UNKNOWN"
         print(f"文字起こし結果が空でした。(finish_reason: {finish})")
+        cleanup_uploaded_audio()
         return None, None
 
     full_text = full_text.strip()
 
     # フィラー（つなぎ言葉）の後処理除去
     full_text = remove_fillers(full_text)
+
+    cleanup_uploaded_audio()
 
     return full_text, ""
 
@@ -697,8 +693,8 @@ def generate_title_from_text(text, api_key):
     models_to_try = [GEMINI_MODEL]
     if GEMINI_MODEL != "gemini-2.5-flash":
         models_to_try.append("gemini-2.5-flash")
-    if "gemini-2.0-flash" not in models_to_try:
-        models_to_try.append("gemini-2.0-flash")
+    if "gemini-3.1-flash-lite" not in models_to_try:
+        models_to_try.append("gemini-3.1-flash-lite")
 
     client = genai.Client(api_key=api_key)
     prompt = """あなたはプロの議事録作成アシスタントです。
@@ -773,10 +769,44 @@ def generate_title_from_text(text, api_key):
 
 
 # ============================================================
-# PDF生成
+# Markdown / PDF生成
 # ============================================================
 
-def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", key_slides=None):
+def create_markdown(full_text, output_filepath, title="音声文字起こし",
+                    audio_filename=""):
+    """文字起こしテキストをMarkdownとして出力する。"""
+    print("\nMarkdownを生成中...")
+
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"# {title}",
+        "",
+        f"- 作成日時: {now}",
+    ]
+    if audio_filename:
+        lines.append(f"- ソースファイル: {audio_filename}")
+    lines.extend([
+        f"- モデル: {GEMINI_MODEL}",
+        "",
+        "---",
+        "",
+        "## 文字起こし全文",
+        "",
+        full_text.strip(),
+        "",
+    ])
+
+    with open(output_filepath, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines))
+
+    file_size_kb = os.path.getsize(output_filepath) / 1024
+    print(f"Markdown保存完了: {output_filepath}")
+    print(f"  サイズ: {file_size_kb:.1f} KB")
+    return output_filepath
+
+
+def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", key_slides=None,
+               document_title=None):
     """文字起こしテキストをPDFとして出力する"""
     from fpdf import FPDF
 
@@ -810,19 +840,25 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
     # タイトルとヘッダー情報
     if font_family == "Japanese":
         pdf.set_font("Japanese", "B", size=18)
-        pdf.cell(0, 15, "音声文字起こし", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.cell(0, 15, document_title or "音声文字起こし",
+                 new_x="LMARGIN", new_y="NEXT", align="C")
         pdf.ln(3)
 
         pdf.set_font("Japanese", "", size=9)
         pdf.set_text_color(100, 100, 100)
-        now = datetime.datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
+        now_value = datetime.datetime.now()
+        now = (
+            f"{now_value:%Y}年{now_value:%m}月{now_value:%d}日 "
+            f"{now_value:%H:%M:%S}"
+        )
         pdf.cell(0, 6, f"作成日時: {now}", new_x="LMARGIN", new_y="NEXT")
         if audio_filename:
             pdf.cell(0, 6, f"ソースファイル: {audio_filename}", new_x="LMARGIN", new_y="NEXT")
         pdf.cell(0, 6, f"モデル: {GEMINI_MODEL}", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_font("Helvetica", "B", size=18)
-        pdf.cell(0, 15, "Audio Transcription", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.cell(0, 15, document_title or "Audio Transcription",
+                 new_x="LMARGIN", new_y="NEXT", align="C")
         pdf.ln(3)
 
         pdf.set_font("Helvetica", "", size=9)
@@ -844,29 +880,20 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
     if key_slides:
         if font_family == "Japanese":
             pdf.set_font("Japanese", "B", size=14)
-            pdf.cell(0, 10, "【 キースライド (Key Slides) 】", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 10, "【 画像解析結果 】", new_x="LMARGIN", new_y="NEXT")
         else:
             pdf.set_font("Helvetica", "B", size=14)
-            pdf.cell(0, 10, "[ Key Slides ]", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 10, "[ Image Analysis Results ]", new_x="LMARGIN", new_y="NEXT")
             
         pdf.ln(2)
         pdf.set_font(font_family, "", size=PDF_FONT_SIZE)
         
         for i, slide in enumerate(key_slides):
             analysis = slide.get("analysis", {})
-            title = f"Slide {i+1} - {slide['timestamp_str']}"
+            title = f"解析 {i+1} - {slide['timestamp_str']}"
             pdf.set_font(font_family, "B", size=11)
             pdf.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
             pdf.set_font(font_family, "", size=PDF_FONT_SIZE)
-            
-            # 画像の挿入（ユーザー要望により廃止）
-            # saved_filename = slide.get("saved_filename")
-            # if saved_filename and slides_dir:
-            #     img_path = os.path.join(slides_dir, saved_filename)
-            #     if os.path.exists(img_path):
-            #         # 横幅150mmで挿入
-            #         pdf.image(img_path, w=150)
-            #         pdf.ln(5)
             
             # 解析結果
             pdf.set_text_color(80, 80, 80)
@@ -881,6 +908,19 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
                     if font_family == "Helvetica":
                         line = line.encode("latin-1", errors="replace").decode("latin-1")
                     pdf.multi_cell(0, PDF_LINE_HEIGHT, line, wrapmode="CHAR" if font_family == "Japanese" else "WORD")
+
+            detected_text = analysis.get('detected_text', '')
+            if detected_text:
+                pdf.ln(2)
+                pdf.set_font(font_family, "B", size=10)
+                pdf.cell(0, 6, "画像内の主要テキスト", new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font(font_family, "", size=PDF_FONT_SIZE)
+                pdf.multi_cell(
+                    0,
+                    PDF_LINE_HEIGHT,
+                    detected_text,
+                    wrapmode="CHAR" if font_family == "Japanese" else "WORD",
+                )
             
             pdf.ln(5)
             pdf.set_draw_color(220, 220, 220)
@@ -928,13 +968,16 @@ def main():
     global GEMINI_MODEL
 
     # コマンドライン引数
-    parser = argparse.ArgumentParser(description="Gemini Voice Transcriber - Audio Transcription to PDF")
+    parser = argparse.ArgumentParser(
+        description="Gemini Voice Transcriber - Audio Transcription to Markdown and PDF"
+    )
     parser.add_argument("audio_file", nargs="?", default=None,
                         help="音声/動画ファイルのパス（省略でPC音声録音モード）")
     parser.add_argument("-l", "--language", default=None,
                         help="言語コード (例: ja, en)")
     parser.add_argument("-m", "--model", default=None,
-                        choices=["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+                        choices=["gemini-2.5-flash", "gemini-3.1-flash-lite",
+                                 "gemini-3.5-flash", "gemini-2.5-pro"],
                         help="Geminiモデル")
 
     # 動画キースライド抽出オプション
@@ -1156,7 +1199,16 @@ def main():
     print(full_text)
     print("-" * 50)
 
-    # PDF生成
+    # Markdown / PDF生成
+    md_filename = f"{title_name}_{timestamp}.md"
+    md_filepath = os.path.join(OUTPUT_DIR, md_filename)
+    create_markdown(
+        full_text,
+        md_filepath,
+        title=title_name,
+        audio_filename=audio_filename,
+    )
+
     pdf_filename = f"{title_name}_{timestamp}.pdf"
     pdf_filepath = os.path.join(OUTPUT_DIR, pdf_filename)
     create_pdf(full_text, timestamped_text, pdf_filepath, audio_filename=audio_filename)
@@ -1166,6 +1218,7 @@ def main():
     print("  すべての処理が完了しました！")
     print("=" * 50)
     print(f"\n  出力フォルダ: {OUTPUT_DIR}")
+    print(f"  Markdown: {md_filename}")
     print(f"  PDF:  {pdf_filename}")
     print()
 

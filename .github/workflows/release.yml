@@ -1,15 +1,15 @@
-name: Build and Release
+name: Package and Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
 
 jobs:
-  build-and-release:
+  package-and-release:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     permissions:
       contents: write
 
@@ -25,43 +25,50 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          pip install -r requirements-app.txt
+          pip install flake8
 
-      - name: Build Executables
+      - name: Verify the application
         run: |
-          pyinstaller --name "Gemini_CLI_Transcriber" --onefile audio_transcriber.py
+          python -m py_compile audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py launcher.py
+          flake8 audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py launcher.py tests --count --select=E9,F63,F7,F82 --show-source --statistics
+          python -m unittest discover -s tests -v
 
-      - name: Download FFmpeg
+      - name: Prepare source package
+        shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
-          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg_extracted"
+          New-Item -ItemType Directory -Force -Path release_package | Out-Null
+          $files = @(
+            'Start.bat',
+            'launcher.py',
+            'local_screen_recorder.py',
+            'local_video_analyzer.py',
+            'gemini_hybrid_analyzer.py',
+            'audio_transcriber.py',
+            'key_slide_extractor.py',
+            'requirements.txt',
+            'requirements-local.txt',
+            'requirements-app.txt',
+            'README.md',
+            'manual.pdf',
+            'manual_EN.pdf',
+            'LICENSE',
+            '.env.example'
+          )
+          Copy-Item -Path $files -Destination release_package
+          Compress-Archive -Path release_package\* -DestinationPath Gemini-Video-Analyzer-Windows.zip
 
-      - name: Prepare Release Archive
-        run: |
-          mkdir release_package
-          copy dist\Gemini_CLI_Transcriber.exe release_package\
-          copy Start_Transcriber.bat release_package\
-          copy ffmpeg_extracted\ffmpeg-*\bin\ffmpeg.exe release_package\
-          copy manual.pdf release_package\
-          copy manual_EN.pdf release_package\
-          copy README.md release_package\
-          copy .env.example release_package\
-          Compress-Archive -Path release_package\* -DestinationPath Gemini-Voice-Transcriber-Windows.zip
-
-      - name: Upload Build Artifact
+      - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Gemini-Voice-Transcriber-Windows
-          path: Gemini-Voice-Transcriber-Windows.zip
+          name: Gemini-Video-Analyzer-Windows
+          path: Gemini-Video-Analyzer-Windows.zip
           retention-days: 7
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            Gemini-Voice-Transcriber-Windows.zip
+          files: Gemini-Video-Analyzer-Windows.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

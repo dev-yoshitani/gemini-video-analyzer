@@ -110,8 +110,8 @@ class KeySlideExtractor:
         self._models_to_try = [self.model]
         if self.model != "gemini-2.5-flash":
             self._models_to_try.append("gemini-2.5-flash")
-        if "gemini-2.0-flash" not in self._models_to_try:
-            self._models_to_try.append("gemini-2.0-flash")
+        if "gemini-3.1-flash-lite" not in self._models_to_try:
+            self._models_to_try.append("gemini-3.1-flash-lite")
 
     # ============================================================
     # 動画→音声抽出
@@ -371,7 +371,13 @@ class KeySlideExtractor:
         # 全リトライ失敗
         return default_result
 
-    def analyze_all_frames(self, frames, transcript_text=None):
+    def analyze_all_frames(
+        self,
+        frames,
+        transcript_text=None,
+        progress_callback=None,
+        skip_analyzed=False,
+    ):
         """全フレームをGemini APIで解析する。
 
         Args:
@@ -408,6 +414,13 @@ class KeySlideExtractor:
             progress = f"[{i+1}/{len(frames)}]"
             print(f"  {progress} {frame['filename']} (t={frame['timestamp_str']})...", end=" ")
 
+            if skip_analyzed and frame.get("analysis"):
+                print(" [再利用]")
+                analyzed.append(frame)
+                if progress_callback:
+                    progress_callback(analyzed)
+                continue
+
             result = self.analyze_frame_with_gemini(frame["path"], client, transcript_text=transcript_text)
             frame["analysis"] = result
 
@@ -420,6 +433,8 @@ class KeySlideExtractor:
                 print(f" [NG] score={result['importance_score']}")
 
             analyzed.append(frame)
+            if progress_callback:
+                progress_callback(analyzed)
 
             # APIレート制限対策（無料枠15RPM考慮の待機）
             if i < len(frames) - 1:
@@ -531,14 +546,14 @@ class KeySlideExtractor:
         Returns:
             list[dict]: 保存先パスが追加されたキースライド情報
         """
-        slides_dir = os.path.join(output_subdir, "key_slides")
+        slides_dir = os.path.join(output_subdir, "重要シーン画像")
         os.makedirs(slides_dir, exist_ok=True)
 
         print(f"\nキースライド画像を保存中...")
         for i, slide in enumerate(key_slides):
             src = slide["path"]
             # ファイル名を連番＋タイムスタンプにする
-            dst_filename = f"slide_{i+1:02d}_{slide['timestamp_str'].replace(':', '-')}.jpg"
+            dst_filename = f"重要場面_{i+1:02d}_{slide['timestamp_str'].replace(':', '-')}.jpg"
             dst = os.path.join(slides_dir, dst_filename)
 
             try:
@@ -597,7 +612,7 @@ class KeySlideExtractor:
 
     def generate_rich_minutes(self, key_slides, transcript_text, output_path,
                               video_filename=""):
-        """rich_minutes.md を生成する。
+        """画像解析結果と文字起こしをまとめたMarkdownを生成する。
 
         MVP仕様: キースライドごとにタイムスタンプと要約を表示し、
         文字起こし全文は末尾にまとめて配置する。
@@ -672,7 +687,7 @@ class KeySlideExtractor:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
-        print(f"rich_minutes.md 保存完了: {output_path}")
+        print(f"Markdown保存完了: {output_path}")
 
     # ============================================================
     # フルパイプライン実行

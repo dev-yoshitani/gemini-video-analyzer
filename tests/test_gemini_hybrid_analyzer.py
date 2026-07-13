@@ -81,6 +81,7 @@ class HybridAnalyzerTests(unittest.TestCase):
                 return frames
 
             with (
+                mock.patch.object(hybrid, "_get_api_key", return_value="test-api-key"),
                 mock.patch("audio_transcriber.transcribe_with_gemini",
                            return_value=("高精度な文字起こし結果です。", "")),
                 mock.patch("audio_transcriber.generate_title_from_text",
@@ -124,6 +125,7 @@ class HybridAnalyzerTests(unittest.TestCase):
                 writer.release()
 
             with (
+                mock.patch.object(hybrid, "_get_api_key", return_value="test-api-key"),
                 mock.patch.object(hybrid, "_pending_jobs_dir", return_value=pending),
                 mock.patch("audio_transcriber.transcribe_with_gemini",
                            return_value=("再利用する文字起こしです。", "")) as transcribe,
@@ -167,6 +169,7 @@ class HybridAnalyzerTests(unittest.TestCase):
                 return frames
 
             with (
+                mock.patch.object(hybrid, "_get_api_key", return_value="test-api-key"),
                 mock.patch.object(hybrid, "_pending_jobs_dir", return_value=pending),
                 mock.patch("audio_transcriber.transcribe_with_gemini") as transcribe_again,
                 mock.patch("audio_transcriber.generate_title_from_text",

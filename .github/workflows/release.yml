@@ -8,6 +8,8 @@ on:
 jobs:
   package-and-release:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     permissions:
       contents: write
 

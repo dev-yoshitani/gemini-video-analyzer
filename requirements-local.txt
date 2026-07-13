@@ -1,0 +1,6 @@
+# Recording and local scene candidate extraction for Gemini analysis
+numpy>=1.26,<3
+opencv-python-headless>=4.10,<5
+av>=12,<19
+mss>=10,<11
+PyAudioWPatch>=0.2.12,<1

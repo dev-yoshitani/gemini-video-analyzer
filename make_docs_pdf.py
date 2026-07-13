@@ -23,6 +23,8 @@ EMOJI_MAP = {
     "🔴": "●",
     "💡": "【ヒント】",
     "🔍": "【確認】",
+    "🌟": "",
+    "✏️": "",
 }
 
 # ============================================================
@@ -460,6 +462,7 @@ class MarkdownPDF(FPDF):
                         w = col_widths[idx]
                         for em, rep in EMOJI_MAP.items():
                             cell_text = cell_text.replace(em, rep)
+                        cell_text = strip_markdown(cell_text)
                         self.multi_cell(w, row_h, cell_text, border=1, align="L", fill=True,
                                         new_x="RIGHT" if idx < col_count - 1 else "LMARGIN",
                                         new_y="LAST" if idx < col_count - 1 else "NEXT")

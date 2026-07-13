@@ -25,9 +25,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -r requirements-local.txt
           pip install flake8
 
       - name: Syntax Check
         run: |
-          python -m py_compile audio_transcriber.py key_slide_extractor.py
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          python -m py_compile audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py launcher.py
+          flake8 audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py launcher.py tests --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Unit Tests
+        run: python -m unittest discover -s tests -v

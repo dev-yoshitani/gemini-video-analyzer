@@ -1,12 +1,12 @@
-# 🎙️ Gemini Voice Transcriber (音声文字起こしツール)
+# 🎙️ Gemini Video Analyzer（動画解析・文字起こしツール）
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![Gemini](https://img.shields.io/badge/AI-Gemini%203.5-blueviolet.svg)](https://aistudio.google.com/)
 
-A powerful, user-friendly desktop application for real-time system audio recording and transcription using the Gemini API. It outputs structured PDF files with auto-generated titles.
+A Windows desktop application that records or analyzes video, selects meaningful scene changes locally, and uses the Gemini API for transcription and analysis. It outputs editable Markdown and structured PDF reports.
 
-Windows環境で動作する、PCシステム音声のリアルタイム録音・文字起こしツールです。Gemini APIを活用し、要約・整形されたPDFマニュアルを自動で生成します。
+Windowsで動作する、録画・動画解析・文字起こしツールです。PC内で重要な場面候補を選別し、Gemini APIを活用して編集しやすいMarkdownと整形済みPDFを自動生成します。
 
 ---
 
@@ -18,18 +18,18 @@ Windows環境で動作する、PCシステム音声のリアルタイム録音�
 
 ## English
 
-## 📥 Download
-[![Download ZIP](https://img.shields.io/badge/Download-Latest%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/Gemini-Voice-Transcriber/releases/latest/download/Gemini-Voice-Transcriber-Windows.zip)
+## 📥 Download and install
 
-Simply download the ZIP, extract it, and run the tool on Windows!
+[![Download ZIP](https://img.shields.io/badge/Download-Latest%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/Gemini-Voice-Transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows.zip)
+
+Download the ZIP, extract it, and install the included dependencies once with Python 3.10 or later.
 
 ### ✨ Features
 - **Real-time System Audio Recording**: Captures computer internal audio using WASAPI loopback.
-- **High-accuracy AI Transcription**: Powered by Google's Gemini API (`gemini-3.5-flash` with automatic fallback to `gemini-2.0-flash`).
+- **High-accuracy AI Transcription**: Powered by Google's Gemini API (`gemini-3.5-flash`, with automatic fallback to `gemini-2.5-flash` and `gemini-3.1-flash-lite` when rate-limited or busy).
 - **🆕 Video Key Slide Extraction**: Automatically extracts important slides, charts, and documents from recorded videos using Gemini's vision capabilities.
 - **Filler Word Removal**: Automatically strips out filler words (e.g., "uhm", "uh", "like") and resolves hallucinated repetitions.
-- **Auto-generated PDFs**: Converts transcriptions into formatted PDF documents with AI-generated titles. 
-- **WAV Splitter Utility**: Built-in tool to split large audio files for smoother uploads.
+- **Markdown & PDF Export**: Saves every transcription as an editable Markdown file and a formatted PDF with an AI-generated title.
 
 ### 🛠️ Initial Setup: Get Gemini API Key
 1. Go to [Google AI Studio](https://aistudio.google.com/apikey).
@@ -41,58 +41,34 @@ Simply download the ZIP, extract it, and run the tool on Windows!
 
 ### 🚀 Usage
 
-#### 1. For General Users (Recommended)
+#### 1. Install once
 
-1. Download the ZIP file (`Gemini-Voice-Transcriber-Windows.zip`) from the **Releases (Assets)** section.
-2. Extract the downloaded ZIP file.
-3. Double-click **Start_Transcriber.bat** to start the application. (You can also drag and drop audio/video files directly onto it for automatic transcription.)
+**Prerequisites:** Windows 10/11 and Python 3.10 or later.
 
-#### 2. For Developers (From Source)
-
-**Prerequisites:**
-- Windows 10/11
-- Python 3.9 or higher
-- ffmpeg (optional, required for video key slide extraction)
-
-**Step 1: Install Dependencies**
-Open PowerShell in the project directory and run:
+Open PowerShell in the extracted folder and run:
 ```powershell
-pip install -r requirements.txt
+py -3 -m pip install -r requirements-app.txt
 ```
 
-**Step 2: Run via Command Line**
-- **Record and Transcribe**:
-  ```powershell
-  python audio_transcriber.py
-  ```
-- **Transcribe existing audio file**:
-  ```powershell
-  python audio_transcriber.py "path/to/your/audio.mp3"
-  ```
-- **Transcribe in a specific language**:
-  ```powershell
-  python audio_transcriber.py "audio.mp3" --language en
-  ```
-- **WAV Splitter** (For large audio files):
-  ```powershell
-  python split_wav.py
-  ```
-- **🆕 Video Key Slide Extraction**:
-  ```powershell
-  python audio_transcriber.py --video meeting.mp4 --extract-key-slides
-  ```
-- **🎥 Real-time Screen Recording & Auto Analysis**:
-  ```powershell
-  python audio_transcriber.py --record-screen
-  ```
+#### 2. Start the recommended workflow
+
+Double-click **Start.bat**. It offers these choices:
+
+1. Record and create a high-accuracy AI analysis report.
+2. Analyze an existing video.
+3. Resume an interrupted high-accuracy analysis.
+4. Open the legacy audio transcription tool.
+
+You can also drag a video file onto **Start.bat** to analyze it. Before recording, choose the full desktop, one monitor, or a mouse-selected area.
 
 > [!WARNING]
 > **Screen Recording Mode Privacy Notice**
-> - The entire desktop will be recorded. Any overlapping windows, notifications, or personal chats will be captured.
-> - **IMPORTANT**: Screenshots extracted from the recording will be uploaded to **Google Gemini API cloud servers** for analysis.
+> - Only the selected recording area is recorded. Notifications or personal chats within that area can still be captured.
+> - The raw video is kept on your PC. Audio and locally selected scene-candidate images are sent to the Gemini API only after confirmation.
 > - Please ensure you hide sensitive information before starting.
 > - Ensure you have permission to record the meeting.
-> - Screen recording requires `ffmpeg`.
+
+The legacy audio-only workflow is available as option 4 inside `Start.bat`.
 
 If this project is useful, please consider giving it a star ⭐
 ---
@@ -101,18 +77,36 @@ If this project is useful, please consider giving it a star ⭐
 
 ## 日本語
 
-## 📥 簡単ダウンロード
-[![ZIPファイルをダウンロード](https://img.shields.io/badge/ダウンロード-最新版ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/Gemini-Voice-Transcriber/releases/latest/download/Gemini-Voice-Transcriber-Windows.zip)
+## 📥 ダウンロードと初回準備
 
-PC初心者の方は、上記のボタンからZIPファイルをダウンロードして解凍するだけで、簡単にWindows上でツールをご利用いただけます。
+[![ZIPファイルをダウンロード](https://img.shields.io/badge/ダウンロード-最新版ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/Gemini-Voice-Transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows.zip)
+
+ZIPを解凍後、最初の一回だけPython 3.10以降で必要なライブラリを入れます。
 
 ### ✨ 主な機能
 - **PCシステム音声録音**: WASAPIループバックを使用し、会議や動画の音声をクリアに直接録音。
-- **高精度AI文字起こし**: Googleの `gemini-3.5-flash` を使用（高負荷時は `gemini-2.0-flash` へ自動切り替え）。
+- **高精度AI文字起こし**: Googleの `gemini-3.5-flash` を使用（制限・混雑時は `gemini-2.5-flash`、さらに `gemini-3.1-flash-lite` へ自動切り替え）。
 - **🆕 動画キースライド抽出**: 会議や授業の録画動画から、重要なスライド・チャート・資料をGeminiのAI解析で自動抽出。文字起こしと統合したリッチ議事録を生成。
 - **つなぎ言葉（フィラー）の自動除去**: 「えーっと」「あのー」などを自動で取り除き、同じ言葉が連続するループ現象（ハルシネーション）も自動で除去。
-- **PDF自動出力**: 文字起こし結果から、AIが最適なタイトルを付けてフォーマットされたPDFを出力。
-- **WAV分割機能**: 長時間の巨大な音声ファイルを自動で分割するユーティリティを内蔵。
+- **Markdown・PDF自動出力**: 文字起こし結果を、AIが最適なタイトルを付けた編集しやすいMarkdownとフォーマット済みPDFの両方で出力。
+
+### 🎯 高精度AI解析 + PDF（推奨）
+
+`Start.bat` の「高精度AI解析」では、録画または保存済み動画からPC内でシーン候補と音声を取り出し、`Gemini 3.5 Flash` で文字起こしと画像内容の解析を行います。制限・混雑時は `Gemini 2.5 Flash`、さらに `Gemini 3.1 Flash-Lite` へ自動で切り替わります。元動画全体は送信せず、音声と候補画像だけを確認後に送信します。
+
+出力PDFには画像そのものを埋め込まず、各場面の時刻・重要度・画像解析の説明・画像内で検出した主要テキストと、文字起こし全文をまとめます。抽出画像は確認用として別フォルダに残ります。
+
+初回だけ、アプリに必要なライブラリをインストールします：
+
+```powershell
+py -3 -m pip install -r requirements-app.txt
+```
+
+普段はメイン起動ファイルの `Start.bat` だけを使います。録画開始前に「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」から録画範囲を選び、Enterキーで開始・停止します。その後の解析とPDF生成まで自動で進みます。既存動画を `Start.bat` にドラッグ＆ドロップした場合は、高精度AI解析の送信確認画面が開きます。
+
+高精度AI解析の途中でAPI制限、通信エラー、アプリ終了などが発生した場合は、シーン候補・文字起こし・画像ごとの解析結果が自動保存されます。次回 `Start.bat` の「未完了の高精度AI解析を途中から再開」を選ぶと、完了済みの処理を再利用し、残りから続行します。
+
+録画データは `output/local_recordings/録画_日時/` に保存されます。中には `画面録画.mp4`、`PC音声.wav`、`AI解析結果` フォルダが作られ、解析結果は「内容のタイトル_解析レポート.pdf」のような分かりやすい名前で保存されます。選んだ録画範囲内に通知や個人的な情報が映らないことを、開始前に確認してください。
 
 ### 🛠️ 初期設定: Gemini API キーの取得
 1. [Google AI Studio](https://aistudio.google.com/apikey) にアクセス。
@@ -124,58 +118,32 @@ PC初心者の方は、上記のボタンからZIPファイルをダウンロー
 
 ### 🚀 使い方
 
-#### 1. 一般ユーザー向け（推奨）
+#### 1. おすすめの使い方
 
-1. **Releases** の Assets から ZIPファイル（`Gemini-Voice-Transcriber-Windows.zip`）をダウンロードします。
-2. ダウンロードした ZIPファイルを解凍（展開）します。
-3. フォルダ内にある **Start_Transcriber.bat** をダブルクリックするだけで起動します。
-   （音声・動画ファイルをこのアイコンの上にドラッグ＆ドロップすると、直接文字起こしを実行することもできます）
+**Start.bat** をダブルクリックします。以下を選べます。
 
-#### 2. 開発者向け（ソースコードから実行）
+1. 録画して高精度AI解析・解析結果PDF
+2. 保存済み動画を高精度AI解析・解析結果PDF
+3. 未完了の高精度AI解析を途中から再開
+4. 従来のGemini文字起こしツール
 
-**動作環境:**
-- Windows 10/11
-- Python 3.9 以上
-- ffmpeg（オプション、動画キースライド抽出に必要）
-
-**手順 1: ライブラリのインストール**
-プロジェクトフォルダでPowerShellを開き、以下を実行します：
-```powershell
-pip install -r requirements.txt
-```
-
-**手順 2: コマンドライン（CUI）から実行**
-- **PC音声を録音して文字起こし**:
-  ```powershell
-  python audio_transcriber.py
-  ```
-- **既存の音声ファイルを文字起こし**:
-  ```powershell
-  python audio_transcriber.py "音声ファイルのパス.mp3"
-  ```
-- **🆕 動画からキースライドを抽出する**:
-  ```powershell
-  python audio_transcriber.py --video 会議録画.mp4 --extract-key-slides
-  ```
-- **🎥 リアルタイム画面録画 ＆ 全自動解析**:
-  ```powershell
-  python audio_transcriber.py --record-screen
-  ```
+動画ファイルを **Start.bat** へドラッグ＆ドロップしても解析できます。録画前には「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」から範囲を選びます。
 
 > [!WARNING]
 > **画面録画モードの注意（プライバシーについて）**
-> - 画面録画モードでは「デスクトップ全体」が録画されます。上に重なった別のウィンドウや、ポップアップ通知、個人チャットなどもすべて録画されます。
-> - **重要**: 録画された動画から抽出されたスクリーンショット画像は、解析のためにインターネット経由で **Google Gemini API（クラウドサーバー）** へ送信されます。
+> - 選んだ録画範囲内の画面だけが録画されますが、通知や個人情報が映らないように注意してください。
+> - **重要**: 元動画はPC内に残ります。Geminiへ送るのは、確認後のPC音声とPC内で厳選した場面候補画像だけです。
 > - パスワードや機密情報が映り込まないよう十分ご注意ください。
 > - 会議などで必要な録画の許可を得た上でご利用ください。
-> - 本機能の利用には `ffmpeg` が必須となります。
+
+従来の音声文字起こしだけを使う場合は、`Start.bat`のメニュー4を選びます。
 
 このプロジェクトが役に立ったら、Starを押してもらえると嬉しいです ⭐
 ---
 
 
 ## 🗺️ Roadmap / 今後の予定
-- [ ] Support export as Markdown / Markdown形式での書き出しサポート
+- [x] Support export as Markdown / Markdown形式での書き出しサポート
 - [ ] Real-time progressive transcription / リアルタイム順次文字起こし表示
 - [ ] Support macOS (CoreAudio) / macOSへの対応
 

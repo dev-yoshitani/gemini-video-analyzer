@@ -846,7 +846,11 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
 
         pdf.set_font("Japanese", "", size=9)
         pdf.set_text_color(100, 100, 100)
-        now = datetime.datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
+        now_value = datetime.datetime.now()
+        now = (
+            f"{now_value:%Y}年{now_value:%m}月{now_value:%d}日 "
+            f"{now_value:%H:%M:%S}"
+        )
         pdf.cell(0, 6, f"作成日時: {now}", new_x="LMARGIN", new_y="NEXT")
         if audio_filename:
             pdf.cell(0, 6, f"ソースファイル: {audio_filename}", new_x="LMARGIN", new_y="NEXT")

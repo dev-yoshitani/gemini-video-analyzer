@@ -1,11 +1,23 @@
 import sys
 import unittest
+import tempfile
+from pathlib import Path
 from unittest import mock
 
 import launcher
 
 
 class LauncherTests(unittest.TestCase):
+    def test_saved_recording_automatically_uses_pc_audio(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
+            folder = Path(temporary)
+            video = folder / "画面録画.mp4"
+            audio = folder / "PC音声.wav"
+            video.write_bytes(b"video")
+            audio.write_bytes(b"RIFF" + b"\x00" * 48)
+
+            self.assertEqual(launcher._find_sidecar_audio(str(video)), audio.resolve())
+
     def test_dragged_video_starts_high_accuracy_analysis(self):
         with mock.patch.object(launcher, "_run_hybrid_video", return_value=7) as run:
             self.assertEqual(launcher.main(["sample.mp4"]), 7)

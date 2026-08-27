@@ -72,6 +72,77 @@ def print_ffmpeg_install_guide():
 # KeySlideExtractor クラス
 # ============================================================
 
+
+def _build_english_frame_analysis_prompt(transcript_text=None):
+    """Return the all-English frame-analysis prompt used by Start_EN.bat."""
+    context_section = ""
+    if transcript_text and transcript_text.strip():
+        max_context_chars = 8000
+        if len(transcript_text) > max_context_chars:
+            context_text = f"{transcript_text[:4000]}\n... [omitted] ...\n{transcript_text[-4000:]}"
+        else:
+            context_text = transcript_text
+        context_section = f"""
+
+Full English transcript of the video:
+{context_text}
+
+Use this spoken context when analyzing the image."""
+
+    return f"""You are a professional meeting-notes and presentation-analysis assistant.{context_section}
+
+This image is a frame extracted from a meeting or presentation video.
+Respond with JSON only. Do not add Markdown or any commentary outside the JSON object.
+
+{{
+  "is_key_slide": true or false,
+  "importance_score": an integer from 0 to 100,
+  "frame_type": one of "slide", "chart", "document", "whiteboard", "screen_share", "speaker_view", or "other",
+  "summary": "Explain in 3 to 5 detailed, concrete English sentences what this frame communicates. Connect it to the spoken context, explain charts or diagrams, and include the presenter’s apparent intent and key conclusion when visible.",
+  "detected_text": "Extract the title, bullets, chart labels, and important numbers. Translate all meaningful visible text into structured English. Preserve proper names and numbers accurately.",
+  "reason": "Explain in specific English why this frame is or is not a key slide."
+}}
+
+Key-slide criteria:
+- A key slide contains visually meaningful information, such as a presentation slide, chart, diagram, important document, or meaningful screen share.
+- A frame containing only a speaker, a transition, a black screen, or a loading screen is not a key slide.
+- Score 80 to 100 for a clear, information-rich key slide; 50 to 79 for partially useful material; and 0 to 49 for low importance.
+- Every string field (summary, detected_text, and reason) must be written in English.
+- Never copy Japanese text verbatim. Translate Japanese interface labels, folder names, and other visible text into English. If a proper name cannot be translated, romanize it instead of using Japanese characters."""
+
+
+_JAPANESE_TEXT_PATTERN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _contains_japanese_text(value):
+    """Return True when a value contains Japanese kana or kanji."""
+    return bool(_JAPANESE_TEXT_PATTERN.search(str(value or "")))
+
+
+def _analysis_contains_japanese(analysis):
+    """Check only the user-visible text fields written to the report."""
+    return any(
+        _contains_japanese_text(analysis.get(field, ""))
+        for field in ("summary", "detected_text", "reason")
+    )
+
+
+def _build_english_analysis_cleanup_prompt(items):
+    """Build a text-only cleanup request for analyses that retained Japanese OCR."""
+    payload = json.dumps({"items": items}, ensure_ascii=False)
+    return f"""Translate the user-visible text fields in this JSON into natural English.
+
+Rules:
+- Return JSON only, using the same top-level object and item indexes.
+- Translate summary, detected_text, and reason completely into English.
+- Do not output Japanese kana or kanji anywhere.
+- Translate Japanese interface labels and folder names. Romanize an untranslatable proper name.
+- Preserve numbers, file extensions, paths, product names, and technical meaning.
+- Do not add, remove, or merge items.
+
+Input JSON:
+{payload}"""
+
 class KeySlideExtractor:
     """動画からキースライドを抽出するメインクラス。
 
@@ -89,7 +160,8 @@ class KeySlideExtractor:
     def __init__(self, api_key, model="gemini-3.5-flash",
                  frame_interval=60, max_key_slides=15,
                  analyze_max_frames=50, importance_threshold=50,
-                 dry_run=False, output_dir=None, skip_frame_analysis=False):
+                 dry_run=False, output_dir=None, skip_frame_analysis=False,
+                 language="ja"):
         self.api_key = api_key
         self.model = model
         self.frame_interval = frame_interval
@@ -98,6 +170,7 @@ class KeySlideExtractor:
         self.importance_threshold = importance_threshold
         self.dry_run = dry_run
         self.skip_frame_analysis = skip_frame_analysis
+        self.language = "en" if language == "en" else "ja"
         import sys
         if getattr(sys, 'frozen', False):
             base_dir = os.path.dirname(sys.executable)
@@ -253,20 +326,23 @@ class KeySlideExtractor:
             "reason": "analysis failed or skipped",
         }
 
-        # 文脈テキスト（文字起こし全文）をプロンプトに埋め込む
-        context_section = ""
-        if transcript_text and transcript_text.strip():
-            # 長すぎる場合は先頭・末尾を取り出して要約的に使う
-            max_context_chars = 8000
-            if len(transcript_text) > max_context_chars:
-                head = transcript_text[:4000]
-                tail = transcript_text[-4000:]
-                context_text = f"{head}\n...（中略）...\n{tail}"
-            else:
-                context_text = transcript_text
-            context_section = f"""\n\n【この動画の文字起こし全文（発表者の発言内容）】\n{context_text}\n\n上記の文脈・発言内容を十分に考慮した上で、以下の画像を解析してください。"""
+        if self.language == "en":
+            prompt = _build_english_frame_analysis_prompt(transcript_text)
+        else:
+            # 文脈テキスト（文字起こし全文）をプロンプトに埋め込む
+            context_section = ""
+            if transcript_text and transcript_text.strip():
+                # 長すぎる場合は先頭・末尾を取り出して要約的に使う
+                max_context_chars = 8000
+                if len(transcript_text) > max_context_chars:
+                    head = transcript_text[:4000]
+                    tail = transcript_text[-4000:]
+                    context_text = f"{head}\n...（中略）...\n{tail}"
+                else:
+                    context_text = transcript_text
+                context_section = f"""\n\n【この動画の文字起こし全文（発表者の発言内容）】\n{context_text}\n\n上記の文脈・発言内容を十分に考慮した上で、以下の画像を解析してください。"""
 
-        prompt = f"""あなたはプロフェッショナルな議事録作成アシスタントです。{context_section}
+            prompt = f"""あなたはプロフェッショナルな議事録作成アシスタントです。{context_section}
 
 この画像は会議・プレゼンテーションの動画から抽出した1フレームです。
 以下のJSON形式のみで回答してください（マークダウンや余計な説明は一切不要）。
@@ -291,23 +367,26 @@ class KeySlideExtractor:
             with open(frame_path, "rb") as f:
                 image_data = f.read()
         except Exception as e:
-            print(f"    画像読み込みエラー: {e}")
+            print(
+                f"    Image read error: {e}"
+                if self.language == "en"
+                else f"    画像読み込みエラー: {e}"
+            )
             return default_result
 
         from google.genai import types as genai_types
+        from gemini_retry import call_with_gemini_retry, is_retryable_gemini_error
 
         # thinking_budget=0 でthinkingモデル対策
         gen_config = genai_types.GenerateContentConfig(
             thinking_config=genai_types.ThinkingConfig(thinking_budget=0)
         )
 
-        # リトライループ（最大3回）
-        max_retries = 3
-        for attempt in range(max_retries):
-            # リストをコピーしてイテレーションする（ループ中の要素削除によるスキップバグ防止）
+        def analyze_once():
+            last_retryable_error = None
+            last_error = None
             for model in list(self._models_to_try):
                 try:
-                    # 画像をPartとして送信
                     image_part = genai_types.Part.from_bytes(
                         data=image_data,
                         mime_type="image/jpeg",
@@ -319,8 +398,10 @@ class KeySlideExtractor:
                             contents=[prompt, image_part],
                             config=gen_config,
                         )
-                    except Exception:
-                        # thinking_config非対応モデルはconfigなしで再試行
+                    except Exception as config_error:
+                        if is_retryable_gemini_error(config_error):
+                            raise
+                        # thinking_config非対応モデルだけconfigなしで再試行
                         response = client.models.generate_content(
                             model=model,
                             contents=[prompt, image_part],
@@ -348,28 +429,39 @@ class KeySlideExtractor:
                         result["importance_score"] = int(result.get("importance_score", 0))
                         return result
 
-                except Exception as e:
-                    err_str = str(e).lower()
-                    if "503" in err_str or "unavailable" in err_str or "429" in err_str or "too many requests" in err_str or "resourceexhausted" in err_str:
-                        print(f"\n    [APIエラー] モデル {model} で制限/混雑が発生しました: {e}")
-                        if "429" in err_str or "resourceexhausted" in err_str:
-                            # 429 (Quota exceeded) の場合、以降のフレームでも失敗する可能性が高いのでリストから除外
-                            if len(self._models_to_try) > 1:
-                                print(f"    ※ 以降のフレーム解析では {model} をスキップします。")
-                                self._models_to_try.remove(model)
-                        
-                        if model != self._models_to_try[-1] or "429" in err_str:
-                            time.sleep(5)
-                            continue
-                    # その他の致命的なエラーはリトライへ（同じモデルで再試行）
-                    break
+                except Exception as exc:
+                    last_error = exc
+                    if is_retryable_gemini_error(exc):
+                        last_retryable_error = exc
+                        print(
+                            f"\n    [API rate limit / busy] model {model}: {exc}"
+                            if self.language == "en"
+                            else f"\n    [API制限/混雑] モデル {model}: {exc}"
+                        )
+                        continue
+                    print(
+                        f"\n    [API error] model {model}: {exc}"
+                        if self.language == "en"
+                        else f"\n    [APIエラー] モデル {model}: {exc}"
+                    )
 
-            # リトライ前に少し待つ
-            if attempt < max_retries - 1:
-                time.sleep(5)
+            if last_retryable_error is not None:
+                raise last_retryable_error
+            if last_error is not None:
+                print(
+                    f"    Image analysis skipped: {last_error}"
+                    if self.language == "en"
+                    else f"    画像解析をスキップしました: {last_error}"
+                )
+            return default_result
 
-        # 全リトライ失敗
-        return default_result
+        # 制限が解除されるまで段階的に待機する。最終的に失敗した場合は
+        # 例外を上位へ渡し、解析済み画像の進捗を残して途中再開できるようにする。
+        return call_with_gemini_retry(
+            analyze_once,
+            description="this image analysis" if self.language == "en" else "この画像の解析",
+            language=self.language,
+        )
 
     def analyze_all_frames(
         self,
@@ -388,13 +480,17 @@ class KeySlideExtractor:
             list[dict]: 解析結果が追加されたフレーム情報リスト
         """
         if self.dry_run:
-            print("\n[dry-run] Gemini API呼び出しをスキップします")
+            print(
+                "\n[dry-run] Skipping Gemini API calls"
+                if self.language == "en"
+                else "\n[dry-run] Gemini API呼び出しをスキップします"
+            )
             for frame in frames:
                 frame["analysis"] = {
                     "is_key_slide": True,
                     "importance_score": 50,
                     "frame_type": "other",
-                    "summary": "[dry-run] 解析スキップ",
+                    "summary": "[dry-run] Analysis skipped" if self.language == "en" else "[dry-run] 解析スキップ",
                     "detected_text": "",
                     "reason": "dry-run mode",
                 }
@@ -403,8 +499,15 @@ class KeySlideExtractor:
         from google import genai
         client = genai.Client(api_key=self.api_key)
 
-        if transcript_text:
+        if transcript_text and self.language == "en":
+            print(
+                f"\nAnalyzing frames with Gemini... ({len(frames)} frames) "
+                "using the full transcript as context"
+            )
+        elif transcript_text:
             print(f"\nGemini APIでフレームを解析中... ({len(frames)} フレーム) ※文字起こし全文を文脈として使用")
+        elif self.language == "en":
+            print(f"\nAnalyzing frames with Gemini... ({len(frames)} frames)")
         else:
             print(f"\nGemini APIでフレームを解析中... ({len(frames)} フレーム)")
         analyzed = []
@@ -415,7 +518,7 @@ class KeySlideExtractor:
             print(f"  {progress} {frame['filename']} (t={frame['timestamp_str']})...", end=" ")
 
             if skip_analyzed and frame.get("analysis"):
-                print(" [再利用]")
+                print(" [reused]" if self.language == "en" else " [再利用]")
                 analyzed.append(frame)
                 if progress_callback:
                     progress_callback(analyzed)
@@ -425,7 +528,7 @@ class KeySlideExtractor:
             frame["analysis"] = result
 
             if result["importance_score"] == 0 and result["reason"] == "analysis failed or skipped":
-                print(" [スキップ]")
+                print(" [skipped]" if self.language == "en" else " [スキップ]")
                 skipped += 1
             elif result["is_key_slide"]:
                 print(f" [OK] score={result['importance_score']} type={result['frame_type']}")
@@ -441,9 +544,120 @@ class KeySlideExtractor:
                 time.sleep(2)
 
         if skipped > 0:
-            print(f"\n  ※ {skipped} フレームの解析がスキップされました")
+            print(
+                f"\n  Note: analysis was skipped for {skipped} frames"
+                if self.language == "en"
+                else f"\n  ※ {skipped} フレームの解析がスキップされました"
+            )
+
+        if self.language == "en":
+            analyzed = self._normalize_english_analyses(analyzed, client)
+            if progress_callback:
+                progress_callback(analyzed)
 
         return analyzed
+
+    def _normalize_english_analyses(self, frames, client):
+        """Translate Japanese OCR that remains in English analysis fields."""
+        affected = []
+        for index, frame in enumerate(frames):
+            analysis = frame.get("analysis") or {}
+            if _analysis_contains_japanese(analysis):
+                affected.append({
+                    "index": index,
+                    "summary": str(analysis.get("summary", "")),
+                    "detected_text": str(analysis.get("detected_text", "")),
+                    "reason": str(analysis.get("reason", "")),
+                })
+
+        if not affected:
+            return frames
+
+        print(
+            f"\n  Translating Japanese text left in {len(affected)} "
+            "frame-analysis result(s)..."
+        )
+        prompt = _build_english_analysis_cleanup_prompt(affected)
+
+        from gemini_retry import call_with_gemini_retry, is_retryable_gemini_error
+
+        def cleanup_once():
+            last_retryable_error = None
+            last_error = None
+            for model in list(self._models_to_try):
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                    )
+                    text = getattr(response, "text", None)
+                    if not text and getattr(response, "candidates", None):
+                        parts_text = []
+                        for part in response.candidates[0].content.parts:
+                            if (
+                                hasattr(part, "text")
+                                and part.text
+                                and not getattr(part, "thought", False)
+                            ):
+                                parts_text.append(part.text)
+                        text = "".join(parts_text)
+
+                    parsed = self._extract_json(text)
+                    if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
+                        return parsed["items"]
+                except Exception as exc:
+                    last_error = exc
+                    if is_retryable_gemini_error(exc):
+                        last_retryable_error = exc
+                        continue
+
+            if last_retryable_error is not None:
+                raise last_retryable_error
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Gemini returned no valid English cleanup result.")
+
+        cleaned_items = []
+        try:
+            cleaned_items = call_with_gemini_retry(
+                cleanup_once,
+                description="English frame-analysis cleanup",
+                language="en",
+            )
+        except Exception as exc:
+            print(f"  Warning: English cleanup failed: {exc}")
+
+        cleaned_by_index = {
+            item.get("index"): item
+            for item in cleaned_items
+            if isinstance(item, dict) and isinstance(item.get("index"), int)
+        }
+        fallback_text = {
+            "summary": (
+                "This frame contains relevant visual information, but an English "
+                "summary could not be produced reliably."
+            ),
+            "detected_text": (
+                "Visible interface text was detected, but a reliable English "
+                "translation was unavailable."
+            ),
+            "reason": (
+                "The frame's importance could not be described reliably in English."
+            ),
+        }
+
+        for original in affected:
+            index = original["index"]
+            analysis = frames[index].setdefault("analysis", {})
+            cleaned = cleaned_by_index.get(index, {})
+            for field in ("summary", "detected_text", "reason"):
+                candidate = str(cleaned.get(field, "")).strip()
+                if candidate and not _contains_japanese_text(candidate):
+                    analysis[field] = candidate
+                elif _contains_japanese_text(analysis.get(field, "")):
+                    analysis[field] = fallback_text[field]
+
+        return frames
 
     # ============================================================
     # 重複除外
@@ -496,7 +710,11 @@ class KeySlideExtractor:
         deduplicated_keys = [f for idx, f in enumerate(key_frames) if idx not in to_remove]
 
         if removed_count > 0:
-            print(f"\n  重複フレーム除外: {removed_count} フレームを除外しました")
+            print(
+                f"\n  Removed {removed_count} duplicate frames"
+                if self.language == "en"
+                else f"\n  重複フレーム除外: {removed_count} フレームを除外しました"
+            )
 
         return deduplicated_keys + non_key_frames
 
@@ -529,7 +747,13 @@ class KeySlideExtractor:
         # タイムスタンプ順に並べ直す
         selected.sort(key=lambda f: f["timestamp_sec"])
 
-        print(f"\n  キースライド選定: {len(selected)} / {len(candidates)} 件 (閾値: {self.importance_threshold})")
+        if self.language == "en":
+            print(
+                f"\n  Key slides selected: {len(selected)} / {len(candidates)} "
+                f"(threshold: {self.importance_threshold})"
+            )
+        else:
+            print(f"\n  キースライド選定: {len(selected)} / {len(candidates)} 件 (閾値: {self.importance_threshold})")
         return selected
 
     # ============================================================

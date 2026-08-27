@@ -4,9 +4,9 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![Gemini](https://img.shields.io/badge/AI-Gemini%203.5-blueviolet.svg)](https://aistudio.google.com/)
 
-A Windows desktop application that records or analyzes video, selects meaningful scene changes locally, and uses the Gemini API for transcription and analysis. It outputs editable Markdown and structured PDF reports.
+A Windows desktop application that records or analyzes video, selects meaningful scene changes locally, and uses the Gemini API for transcription and analysis. The recommended workflow keeps the recording and a structured PDF report.
 
-Windowsで動作する、録画・動画解析・文字起こしツールです。PC内で重要な場面候補を選別し、Gemini APIを活用して編集しやすいMarkdownと整形済みPDFを自動生成します。
+Windowsで動作する、録画・動画解析・文字起こしツールです。PC内で重要な場面候補を選別し、Gemini APIを活用して整形済みPDFを自動生成します。
 
 ---
 
@@ -22,14 +22,16 @@ Windowsで動作する、録画・動画解析・文字起こしツールです�
 
 [![Download ZIP](https://img.shields.io/badge/Download-Latest%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/Gemini-Voice-Transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows.zip)
 
-Download the ZIP, extract it, and install the included dependencies once with Python 3.10 or later.
+From [GitHub Releases](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
 
 ### ✨ Features
 - **Real-time System Audio Recording**: Captures computer internal audio using WASAPI loopback.
+- **Pre-recording Audio Test**: Checks the actual system-audio level for three seconds before screen recording begins.
 - **High-accuracy AI Transcription**: Powered by Google's Gemini API (`gemini-3.5-flash`, with automatic fallback to `gemini-2.5-flash` and `gemini-3.1-flash-lite` when rate-limited or busy).
+- **Automatic Rate-limit Recovery**: Waits and retries automatically for temporary 429/503 errors. Completed stages and images are reused after interruption.
 - **🆕 Video Key Slide Extraction**: Automatically extracts important slides, charts, and documents from recorded videos using Gemini's vision capabilities.
 - **Filler Word Removal**: Automatically strips out filler words (e.g., "uhm", "uh", "like") and resolves hallucinated repetitions.
-- **Markdown & PDF Export**: Saves every transcription as an editable Markdown file and a formatted PDF with an AI-generated title.
+- **Clean PDF Output**: Keeps the original recording, captured PC audio, and the formatted PDF. Temporary images and analysis files are removed after success.
 
 ### 🛠️ Initial Setup: Get Gemini API Key
 1. Go to [Google AI Studio](https://aistudio.google.com/apikey).
@@ -52,14 +54,15 @@ py -3 -m pip install -r requirements-app.txt
 
 #### 2. Start the recommended workflow
 
-Double-click **Start.bat**. It offers these choices:
+Double-click **Start_EN.bat** for the English workflow. It offers these choices:
 
-1. Record and create a high-accuracy AI analysis report.
-2. Analyze an existing video.
-3. Resume an interrupted high-accuracy analysis.
-4. Open the legacy audio transcription tool.
+1. Record and create a high-accuracy English AI analysis report.
+2. Analyze an existing video and create an English report.
+3. Resume an interrupted English analysis.
 
-You can also drag a video file onto **Start.bat** to analyze it. Before recording, choose the full desktop, one monitor, or a mouse-selected area.
+You can also drag a video file onto **Start_EN.bat** to analyze it. Before recording, choose the full desktop, one monitor, or a mouse-selected area. Start playback on the PC before the three-second audio test; recording starts only after sound is detected.
+
+The English workflow creates an English transcript and English frame analysis. English speech is transcribed directly; other spoken languages are translated into natural English. Detected on-screen text is summarized or translated into English for the PDF.
 
 > [!WARNING]
 > **Screen Recording Mode Privacy Notice**
@@ -68,7 +71,7 @@ You can also drag a video file onto **Start.bat** to analyze it. Before recordin
 > - Please ensure you hide sensitive information before starting.
 > - Ensure you have permission to record the meeting.
 
-The legacy audio-only workflow is available as option 4 inside `Start.bat`.
+The Japanese workflow, including the legacy audio-only tool, remains available from `Start.bat`.
 
 If this project is useful, please consider giving it a star ⭐
 ---
@@ -81,20 +84,22 @@ If this project is useful, please consider giving it a star ⭐
 
 [![ZIPファイルをダウンロード](https://img.shields.io/badge/ダウンロード-最新版ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/Gemini-Voice-Transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows.zip)
 
-ZIPを解凍後、最初の一回だけPython 3.10以降で必要なライブラリを入れます。
+[GitHub Releases](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest)から`Gemini-Video-Analyzer-Windows-Japanese.zip`をダウンロードして解凍します。最初の一回だけPython 3.10以降で必要なライブラリを入れます。
 
 ### ✨ 主な機能
 - **PCシステム音声録音**: WASAPIループバックを使用し、会議や動画の音声をクリアに直接録音。
+- **録画前の音声テスト**: 録画開始前にPC音声を3秒間確認し、無音やデバイス異常のまま長時間録画することを防止。
 - **高精度AI文字起こし**: Googleの `gemini-3.5-flash` を使用（制限・混雑時は `gemini-2.5-flash`、さらに `gemini-3.1-flash-lite` へ自動切り替え）。
+- **API制限からの自動復旧**: 一時的な429/503エラーでは段階的に待機して自動再試行。中断後も完了済みの工程と画像解析を再利用。
 - **🆕 動画キースライド抽出**: 会議や授業の録画動画から、重要なスライド・チャート・資料をGeminiのAI解析で自動抽出。文字起こしと統合したリッチ議事録を生成。
 - **つなぎ言葉（フィラー）の自動除去**: 「えーっと」「あのー」などを自動で取り除き、同じ言葉が連続するループ現象（ハルシネーション）も自動で除去。
-- **Markdown・PDF自動出力**: 文字起こし結果を、AIが最適なタイトルを付けた編集しやすいMarkdownとフォーマット済みPDFの両方で出力。
+- **整理されたPDF出力**: 正常終了後は画面録画、PC音声、AIがタイトルを付けたPDFだけを残し、中間画像や解析用ファイルを自動削除。
 
 ### 🎯 高精度AI解析 + PDF（推奨）
 
 `Start.bat` の「高精度AI解析」では、録画または保存済み動画からPC内でシーン候補と音声を取り出し、`Gemini 3.5 Flash` で文字起こしと画像内容の解析を行います。制限・混雑時は `Gemini 2.5 Flash`、さらに `Gemini 3.1 Flash-Lite` へ自動で切り替わります。元動画全体は送信せず、音声と候補画像だけを確認後に送信します。
 
-出力PDFには画像そのものを埋め込まず、各場面の時刻・重要度・画像解析の説明・画像内で検出した主要テキストと、文字起こし全文をまとめます。抽出画像は確認用として別フォルダに残ります。
+出力PDFには画像そのものを埋め込まず、各場面の時刻・重要度・画像解析の説明・画像内で検出した主要テキストと、文字起こし全文をまとめます。抽出画像などの中間ファイルはPDF完成後に自動削除します。
 
 初回だけ、アプリに必要なライブラリをインストールします：
 
@@ -102,9 +107,9 @@ ZIPを解凍後、最初の一回だけPython 3.10以降で必要なライブラ
 py -3 -m pip install -r requirements-app.txt
 ```
 
-普段はメイン起動ファイルの `Start.bat` だけを使います。録画開始前に「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」から録画範囲を選び、Enterキーで開始・停止します。その後の解析とPDF生成まで自動で進みます。既存動画を `Start.bat` にドラッグ＆ドロップした場合は、高精度AI解析の送信確認画面が開きます。
+普段はメイン起動ファイルの `Start.bat` だけを使います。録画開始前に「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」から録画範囲を選びます。PCで音声を再生した状態でEnterキーを押すと3秒間の音声テストを行い、音が確認できた場合だけ録画を開始します。その後の解析とPDF生成まで自動で進みます。既存動画を `Start.bat` にドラッグ＆ドロップした場合は、高精度AI解析の送信確認画面が開きます。
 
-高精度AI解析の途中でAPI制限、通信エラー、アプリ終了などが発生した場合は、シーン候補・文字起こし・画像ごとの解析結果が自動保存されます。次回 `Start.bat` の「未完了の高精度AI解析を途中から再開」を選ぶと、完了済みの処理を再利用し、残りから続行します。
+高精度AI解析中に一時的なAPI制限や混雑を検出すると、待機時間を段階的に延ばしながら自動再試行します。それでも完了できない場合やアプリを終了した場合は、シーン候補・文字起こし・画像ごとの解析結果が自動保存されます。次回 `Start.bat` の「未完了の高精度AI解析を途中から再開」を選ぶと、完了済みの処理を再利用し、残りから続行します。
 
 録画データは `output/local_recordings/録画_日時/` に保存されます。中には `画面録画.mp4`、`PC音声.wav`、`AI解析結果` フォルダが作られ、解析結果は「内容のタイトル_解析レポート.pdf」のような分かりやすい名前で保存されます。選んだ録画範囲内に通知や個人的な情報が映らないことを、開始前に確認してください。
 

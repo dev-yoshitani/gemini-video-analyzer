@@ -355,7 +355,7 @@ def convert_wav_to_smaller(input_path, output_path, target_rate=16000):
         wf.writeframes(struct.pack(f"<{len(downsampled)}h", *downsampled))
 
 
-def compress_audio_for_upload(audio_filepath):
+def compress_audio_for_upload(audio_filepath, language="ja"):
     """
     音声ファイルが大きすぎる場合、Geminiのアップロード時間短縮のためにWAVのみ圧縮する。
     MP3/M4A/MP4などのフォーマットはすでに圧縮されており、WAVに変換するとかえって巨大化するため
@@ -364,36 +364,57 @@ def compress_audio_for_upload(audio_filepath):
     """
     file_size_mb = os.path.getsize(audio_filepath) / (1024 * 1024)
     _, ext = os.path.splitext(audio_filepath)
+    english = language == "en"
 
     # --- WAVファイル以外（MP3, M4A, 等）はそのまま返す ---
     if ext.lower() != ".wav":
         if file_size_mb > 95:
-            print(f"  ファイルサイズ: {file_size_mb:.1f} MB (圧縮済みフォーマットのためそのままアップロードします)")
+            print(
+                f"  File size: {file_size_mb:.1f} MB (already compressed; uploading as-is)"
+                if english
+                else f"  ファイルサイズ: {file_size_mb:.1f} MB (圧縮済みフォーマットのためそのままアップロードします)"
+            )
         else:
-            print(f"  ファイルサイズ: {file_size_mb:.1f} MB")
+            print(f"  File size: {file_size_mb:.1f} MB" if english else f"  ファイルサイズ: {file_size_mb:.1f} MB")
         return audio_filepath, False
 
     # --- WAVファイルの場合 ---
     if file_size_mb < 50:
-        print(f"  ファイルサイズ: {file_size_mb:.1f} MB (WAV変換不要)")
+        print(
+            f"  File size: {file_size_mb:.1f} MB (no WAV conversion needed)"
+            if english
+            else f"  ファイルサイズ: {file_size_mb:.1f} MB (WAV変換不要)"
+        )
         return audio_filepath, False
 
     # 巨大なWAVファイルの場合はサンプルレートを下げて圧縮
-    print(f"  WAVファイルサイズが {file_size_mb:.1f} MB のため圧縮します...")
+    print(
+        f"  Compressing the {file_size_mb:.1f} MB WAV file..."
+        if english
+        else f"  WAVファイルサイズが {file_size_mb:.1f} MB のため圧縮します..."
+    )
     tmp_path = audio_filepath.replace(".wav", "_upload.wav")
 
     # 極端に大きい場合は8000Hz、それ以外は16000Hz
     target_rate = 8000 if file_size_mb > 300 else 16000
 
-    print(f"  {target_rate}Hz モノラルに変換中...")
+    print(f"  Converting to {target_rate} Hz mono..." if english else f"  {target_rate}Hz モノラルに変換中...")
     try:
         convert_wav_to_smaller(audio_filepath, tmp_path, target_rate=target_rate)
         result_mb = os.path.getsize(tmp_path) / (1024 * 1024)
-        print(f"  変換完了！ {file_size_mb:.1f} MB → {result_mb:.1f} MB")
+        print(
+            f"  Conversion complete: {file_size_mb:.1f} MB → {result_mb:.1f} MB"
+            if english
+            else f"  変換完了！ {file_size_mb:.1f} MB → {result_mb:.1f} MB"
+        )
         return tmp_path, True
     except Exception as e:
-        print(f"  ⚠ WAV圧縮中にエラーが発生しました: {e}")
-        print("  元のファイルのままアップロードを試みます。")
+        print(
+            f"  Warning: WAV compression failed: {e}"
+            if english
+            else f"  ⚠ WAV圧縮中にエラーが発生しました: {e}"
+        )
+        print("  Trying to upload the original file." if english else "  元のファイルのままアップロードを試みます。")
         return audio_filepath, False
 
 
@@ -417,13 +438,18 @@ _FILLER_WORDS = [
     "お", "え", "おー", "ええ",
 ]
 
-def remove_fillers(text):
+_ENGLISH_FILLER_WORDS = [
+    "you know", "um", "uh", "erm", "er", "hmm", "ah", "uh-huh",
+]
+
+def remove_fillers(text, language="ja"):
     """文字起こしテキストからフィラー（つなぎ言葉）を除去する"""
     if not text:
         return text
 
     # フィラーを長い順にソート（「えーっと」が「えー」より先にマッチするように）
-    fillers_sorted = sorted(_FILLER_WORDS, key=len, reverse=True)
+    filler_words = _ENGLISH_FILLER_WORDS if language == "en" else _FILLER_WORDS
+    fillers_sorted = sorted(filler_words, key=len, reverse=True)
     filler_pattern = "|".join(re.escape(f) for f in fillers_sorted)
 
     lines = text.split("\n")
@@ -485,94 +511,28 @@ def remove_fillers(text):
     return result.strip()
 
 
-# ============================================================
-# Gemini 文字起こし
-# ============================================================
+def _build_transcription_prompt(language=None):
+    """指定した出力言語に合わせたGemini文字起こし用プロンプトを返す。"""
+    if language == "en":
+        return """Create a complete, readable English transcript of the attached audio.
 
-def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_callback=None):
-    """Gemini APIで音声ファイルを文字起こしする"""
-    from google import genai
+Instructions:
+- If the speech is English, transcribe it faithfully in English.
+- If the speech is in another language, translate it faithfully into natural English while preserving the meaning and order of the speech.
+- Use clear punctuation and paragraph breaks.
+- Do not add speaker labels such as "Speaker A" or any commentary.
+- Mark unintelligible portions as [inaudible].
+- Output only the full transcript.
 
-    print(f"\nGemini APIに接続中... (モデル: {GEMINI_MODEL})")
-    client = genai.Client(api_key=api_key)
+Remove non-meaningful filler words such as "um", "uh", "erm", and repeated false starts when doing so does not change the speaker's meaning."""
 
-    # ファイルアップロード
-    import mimetypes
-    _, ext = os.path.splitext(audio_filepath)
-
-    # 100MB制限対応: 必要に応じて圧縮
-    file_size_mb = os.path.getsize(audio_filepath) / (1024 * 1024)
-    if progress_callback:
-        progress_callback(2, f"ファイルを確認中... ({file_size_mb:.1f} MB)")
-    print(f"\n元ファイル: {file_size_mb:.1f} MB")
-    upload_path, converted_tmp = compress_audio_for_upload(audio_filepath)
-    converted_tmp = upload_path if converted_tmp else None
-
-    file_size_mb = os.path.getsize(upload_path) / (1024 * 1024)
-    if progress_callback:
-        progress_callback(3, f"Geminiにアップロード中... ({file_size_mb:.1f} MB)")
-    print(f"音声ファイルをアップロード中... ({file_size_mb:.1f} MB)")
-
-    # MIMEタイプを判定
-    upload_ext = os.path.splitext(upload_path)[1]
-    mime_type, _ = mimetypes.guess_type(upload_path)
-    if not mime_type:
-        mime_type = "audio/mp4" if upload_ext.lower() == ".m4a" else "audio/wav"
-
-    safe_filename = f"audio{upload_ext}"
-    with open(upload_path, "rb") as f:
-        audio_file = client.files.upload(
-            file=f,
-            config={"display_name": safe_filename, "mime_type": mime_type},
-        )
-    print(f"  アップロード完了: {audio_file.name}")
-
-    def cleanup_uploaded_audio() -> None:
-        """Gemini上の一時音声とローカル変換ファイルを削除する。"""
-        try:
-            client.files.delete(name=audio_file.name)
-        except Exception:
-            pass
-        if converted_tmp and os.path.exists(converted_tmp):
-            try:
-                os.remove(converted_tmp)
-            except Exception:
-                pass
-
-    # 処理完了を待機
-    if progress_callback:
-        progress_callback(3, "ファイルの処理を待機中...")
-    print("ファイル処理を待機中...")
-    wait_count = 0
-    max_wait = 900  # 900回 * 2秒 = 1800秒 (30分)
-    while audio_file.state.name == "PROCESSING":
-        time.sleep(2)
-        wait_count += 1
-        if wait_count > max_wait:
-            print("ファイルの処理待ちがタイムアウトしました（30分経過）。処理を中止します。")
-            cleanup_uploaded_audio()
-            return None, None
-        try:
-            audio_file = client.files.get(name=audio_file.name)
-        except Exception:
-            cleanup_uploaded_audio()
-            raise
-
-    if audio_file.state.name == "FAILED":
-        print("ファイルの処理に失敗しました。")
-        cleanup_uploaded_audio()
-        return None, None
-
-    # プロンプト作成
     lang_instruction = ""
     if language == "ja":
         lang_instruction = "音声は日本語です。日本語で文字起こししてください。"
-    elif language == "en":
-        lang_instruction = "The audio is in English. Please transcribe in English."
     elif language:
         lang_instruction = f"Please transcribe in language code: {language}."
 
-    prompt = f"""以下の音声を文字起こししてください。
+    return f"""以下の音声を文字起こししてください。
 
 【指示】
 {lang_instruction if lang_instruction else "日本語の音声は日本語で、英語は英語で文字起こししてください。"}
@@ -588,10 +548,142 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
 文頭・文末・文中のどこにあっても削除してください。
 """
 
+
+# ============================================================
+# Gemini 文字起こし
+# ============================================================
+
+def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_callback=None):
+    """Gemini APIで音声ファイルを文字起こしする"""
+    from google import genai
+    from gemini_retry import call_with_gemini_retry, is_retryable_gemini_error
+
+    english = language == "en"
+    print(
+        f"\nConnecting to the Gemini API... (model: {GEMINI_MODEL})"
+        if english
+        else f"\nGemini APIに接続中... (モデル: {GEMINI_MODEL})"
+    )
+    client = genai.Client(api_key=api_key)
+
+    # ファイルアップロード
+    import mimetypes
+    _, ext = os.path.splitext(audio_filepath)
+
+    # 100MB制限対応: 必要に応じて圧縮
+    file_size_mb = os.path.getsize(audio_filepath) / (1024 * 1024)
+    if progress_callback:
+        progress_callback(
+            2,
+            f"Checking the audio file... ({file_size_mb:.1f} MB)"
+            if english
+            else f"ファイルを確認中... ({file_size_mb:.1f} MB)",
+        )
+    print(
+        f"\nSource file: {file_size_mb:.1f} MB"
+        if english
+        else f"\n元ファイル: {file_size_mb:.1f} MB"
+    )
+    upload_path, converted_tmp = compress_audio_for_upload(audio_filepath, language=language)
+    converted_tmp = upload_path if converted_tmp else None
+
+    file_size_mb = os.path.getsize(upload_path) / (1024 * 1024)
+    if progress_callback:
+        progress_callback(
+            3,
+            f"Uploading to Gemini... ({file_size_mb:.1f} MB)"
+            if english
+            else f"Geminiにアップロード中... ({file_size_mb:.1f} MB)",
+        )
+    print(
+        f"Uploading audio... ({file_size_mb:.1f} MB)"
+        if english
+        else f"音声ファイルをアップロード中... ({file_size_mb:.1f} MB)"
+    )
+
+    # MIMEタイプを判定
+    upload_ext = os.path.splitext(upload_path)[1]
+    mime_type, _ = mimetypes.guess_type(upload_path)
+    if not mime_type:
+        mime_type = "audio/mp4" if upload_ext.lower() == ".m4a" else "audio/wav"
+
+    safe_filename = f"audio{upload_ext}"
+    def upload_audio():
+        with open(upload_path, "rb") as upload_file:
+            return client.files.upload(
+                file=upload_file,
+                config={"display_name": safe_filename, "mime_type": mime_type},
+            )
+
+    try:
+        audio_file = call_with_gemini_retry(
+            upload_audio,
+            description="audio upload" if english else "音声アップロード",
+            language="en" if english else "ja",
+        )
+    except Exception:
+        if converted_tmp and os.path.exists(converted_tmp):
+            try:
+                os.remove(converted_tmp)
+            except OSError:
+                pass
+        raise
+    print(
+        f"  Upload complete: {audio_file.name}"
+        if english
+        else f"  アップロード完了: {audio_file.name}"
+    )
+
+    def cleanup_uploaded_audio() -> None:
+        """Gemini上の一時音声とローカル変換ファイルを削除する。"""
+        try:
+            client.files.delete(name=audio_file.name)
+        except Exception:
+            pass
+        if converted_tmp and os.path.exists(converted_tmp):
+            try:
+                os.remove(converted_tmp)
+            except Exception:
+                pass
+
+    # 処理完了を待機
+    if progress_callback:
+        progress_callback(3, "Waiting for file processing..." if english else "ファイルの処理を待機中...")
+    print("Waiting for file processing..." if english else "ファイル処理を待機中...")
+    wait_count = 0
+    max_wait = 900  # 900回 * 2秒 = 1800秒 (30分)
+    while audio_file.state.name == "PROCESSING":
+        time.sleep(2)
+        wait_count += 1
+        if wait_count > max_wait:
+            print(
+                "Timed out waiting for file processing after 30 minutes. Stopping."
+                if english
+                else "ファイルの処理待ちがタイムアウトしました（30分経過）。処理を中止します。"
+            )
+            cleanup_uploaded_audio()
+            return None, None
+        try:
+            audio_file = call_with_gemini_retry(
+                lambda: client.files.get(name=audio_file.name),
+                description="audio processing status check" if english else "音声処理状況の確認",
+                language="en" if english else "ja",
+            )
+        except Exception:
+            cleanup_uploaded_audio()
+            raise
+
+    if audio_file.state.name == "FAILED":
+        print("File processing failed." if english else "ファイルの処理に失敗しました。")
+        cleanup_uploaded_audio()
+        return None, None
+
+    prompt = _build_transcription_prompt(language)
+
     # 文字起こし実行
     if progress_callback:
-        progress_callback(3, "Geminiで文字起こしを実行中...")
-    print("Geminiで文字起こし中...")
+        progress_callback(3, "Transcribing with Gemini..." if english else "Geminiで文字起こしを実行中...")
+    print("Transcribing with Gemini..." if english else "Geminiで文字起こし中...")
     start_time = time.time()
 
     # 混雑時にモデルを切り替えて再試行するロジック
@@ -601,55 +693,74 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
     if "gemini-3.1-flash-lite" not in models_to_try:
         models_to_try.append("gemini-3.1-flash-lite")
 
-    response = None
-    last_error = None
     # thinking モデル用の設定（thinking_budget=0 で思考モードをOFFにし response.text が空になるのを防ぐ）
     from google.genai import types as genai_types
     gen_config = genai_types.GenerateContentConfig(
         thinking_config=genai_types.ThinkingConfig(thinking_budget=0)
     )
 
-    for model in models_to_try:
-        try:
-            print(f"文字起こし試行中... (モデル: {model})")
+    def transcribe_once():
+        last_retryable_error = None
+        last_error = None
+        for model in models_to_try:
             try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=[prompt, audio_file],
-                    config=gen_config,
+                print(
+                    f"Trying transcription... (model: {model})"
+                    if english
+                    else f"文字起こし試行中... (モデル: {model})"
                 )
-            except Exception:
-                # thinking_config に対応していない古いモデルはconfigなしで再試行
-                response = client.models.generate_content(
-                    model=model,
-                    contents=[prompt, audio_file],
+                try:
+                    return client.models.generate_content(
+                        model=model,
+                        contents=[prompt, audio_file],
+                        config=gen_config,
+                    )
+                except Exception as config_error:
+                    if is_retryable_gemini_error(config_error):
+                        raise
+                    # thinking_config に対応していないモデルだけconfigなしで再試行
+                    return client.models.generate_content(
+                        model=model,
+                        contents=[prompt, audio_file],
+                    )
+            except Exception as exc:
+                last_error = exc
+                if is_retryable_gemini_error(exc):
+                    last_retryable_error = exc
+                    print(
+                        f"Model {model} is rate-limited or busy."
+                        if english
+                        else f"モデル {model} が制限または混雑中です。"
+                    )
+                    continue
+                print(
+                    f"Model {model} returned an error: {exc}"
+                    if english
+                    else f"モデル {model} でエラーが発生しました: {exc}"
                 )
-            break
-        except Exception as e:
-            err_str = str(e)
-            last_error = err_str
-            if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                print(f"モデル {model} が制限または混雑中（429/503）です。")
-                if model != models_to_try[-1]:
-                    print("別のモデルで再試行します...")
-                    time.sleep(5)
-                else:
-                    # 最後のモデルでも429が出た場合は少し長めに待機してリトライを期待する
-                    time.sleep(10)
-                continue
-            else:
-                print(f"APIエラーが発生しました: {e}")
-                # 429/503以外の致命的なエラーは他のモデルを試さずに終了
-                break
+        if last_retryable_error is not None:
+            raise last_retryable_error
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("No Gemini model is available." if english else "利用できるGeminiモデルがありません。")
 
-    # 全モデルで失敗した場合はあきらめる
-    if response is None:
-        print(f"文字起こしに失敗しました（すべてのモデルが利用不可、またはエラー）: {last_error}")
+    try:
+        response = call_with_gemini_retry(
+            transcribe_once,
+            description="transcription" if english else "文字起こし",
+            language="en" if english else "ja",
+        )
+    except Exception as exc:
+        print(f"Transcription failed: {exc}" if english else f"文字起こしに失敗しました: {exc}")
         cleanup_uploaded_audio()
         return None, None
 
     elapsed = time.time() - start_time
-    print(f"文字起こし完了！ (処理時間: {elapsed:.1f} 秒)")
+    print(
+        f"Transcription complete! (processing time: {elapsed:.1f} seconds)"
+        if english
+        else f"文字起こし完了！ (処理時間: {elapsed:.1f} 秒)"
+    )
 
     # response.text が None/空の場合、partsから直接テキストを取得する（thinking モデル対策）
     full_text = response.text
@@ -663,14 +774,18 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
 
     if not full_text or not full_text.strip():
         finish = response.candidates[0].finish_reason if response.candidates else "UNKNOWN"
-        print(f"文字起こし結果が空でした。(finish_reason: {finish})")
+        print(
+            f"The transcript was empty. (finish_reason: {finish})"
+            if english
+            else f"文字起こし結果が空でした。(finish_reason: {finish})"
+        )
         cleanup_uploaded_audio()
         return None, None
 
     full_text = full_text.strip()
 
     # フィラー（つなぎ言葉）の後処理除去
-    full_text = remove_fillers(full_text)
+    full_text = remove_fillers(full_text, language="en" if english else "ja")
 
     cleanup_uploaded_audio()
 
@@ -681,23 +796,26 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
 # タイトル生成
 # ============================================================
 
-def generate_title_from_text(text, api_key):
-    """文字起こしテキストから簡潔なタイトルを生成する"""
-    from google import genai
-    from google.genai import types as genai_types
-    import re
+def _build_title_prompt(language="ja"):
+    if language == "en":
+        return """You are a professional meeting-notes assistant.
+Read the transcript and return exactly one concise English title that clearly identifies the central topic of the meeting, presentation, or video. The title must be safe as a Windows file name.
 
-    print("\n文字起こし内容からタイトルを生成中...")
-    
-    # 試行するモデルの優先順位リスト
-    models_to_try = [GEMINI_MODEL]
-    if GEMINI_MODEL != "gemini-2.5-flash":
-        models_to_try.append("gemini-2.5-flash")
-    if "gemini-3.1-flash-lite" not in models_to_try:
-        models_to_try.append("gemini-3.1-flash-lite")
+Rules:
+- Do not use any of these characters: \\ / : * ? " < > |
+- Output only the title: no prefix, quotation marks, punctuation-only line, or explanation.
+- Keep it within about 60 characters.
+- Include at least one concrete keyword such as a proper noun, project, product, number, or specific topic.
+- Avoid generic titles made only of words such as "Meeting", "Transcript", or "Video".
+- If the content cannot be understood, output only: Transcript
 
-    client = genai.Client(api_key=api_key)
-    prompt = """あなたはプロの議事録作成アシスタントです。
+Examples:
+- Q3 Revenue Review and Next-Year Strategy
+- New System Requirements and Rollout Plan
+- AI Workflow Automation for Customer Support
+- Technical Interview Feedback and Evaluation"""
+
+    return """あなたはプロの議事録作成アシスタントです。
 以下の文字起こしテキストを読み込み、この会議・発表・動画の「核心となるテーマや話題」が一目でわかる、Windowsのファイル名として使えるタイトルを1つだけ出力してください。
 
 【重要なルール】
@@ -714,6 +832,26 @@ def generate_title_from_text(text, api_key):
 - 「AIを活用した業務効率化の取り組み」
 - 「採用面接フィードバック 技術評価」
 """
+
+
+def generate_title_from_text(text, api_key, language="ja"):
+    """文字起こしテキストから簡潔なタイトルを生成する"""
+    from google import genai
+    from google.genai import types as genai_types
+    import re
+
+    english = language == "en"
+    print("\nGenerating a title from the transcript..." if english else "\n文字起こし内容からタイトルを生成中...")
+
+    # 試行するモデルの優先順位リスト
+    models_to_try = [GEMINI_MODEL]
+    if GEMINI_MODEL != "gemini-2.5-flash":
+        models_to_try.append("gemini-2.5-flash")
+    if "gemini-3.1-flash-lite" not in models_to_try:
+        models_to_try.append("gemini-3.1-flash-lite")
+
+    client = genai.Client(api_key=api_key)
+    prompt = _build_title_prompt(language)
 
     for model in models_to_try:
         try:
@@ -758,12 +896,20 @@ def generate_title_from_text(text, api_key):
                 title_candidate = re.sub(r'[\\/:*?"<>|]', '', title_candidate)
                 
                 if title_candidate:
-                    print(f"  生成されたタイトル: {title_candidate} (モデル: {model})")
+                    print(
+                        f"  Generated title: {title_candidate} (model: {model})"
+                        if english
+                        else f"  生成されたタイトル: {title_candidate} (モデル: {model})"
+                    )
                     return title_candidate
         except Exception as e:
-            print(f"  モデル {model} でのタイトル生成に失敗しました: {e}")
+            print(
+                f"  Could not generate a title with model {model}: {e}"
+                if english
+                else f"  モデル {model} でのタイトル生成に失敗しました: {e}"
+            )
 
-    return "文字起こし結果"
+    return "Transcript" if english else "文字起こし結果"
 
 
 
@@ -806,11 +952,12 @@ def create_markdown(full_text, output_filepath, title="音声文字起こし",
 
 
 def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", key_slides=None,
-               document_title=None):
+               document_title=None, language="ja"):
     """文字起こしテキストをPDFとして出力する"""
     from fpdf import FPDF
 
-    print("\nPDFを生成中...")
+    english = language == "en"
+    print("\nGenerating PDF..." if english else "\nPDFを生成中...")
 
     font_path = find_japanese_font()
     font_family = "Japanese"
@@ -818,14 +965,22 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
     if not font_path:
         has_japanese = any(ord(c) >= 0x3000 for c in full_text)
         if has_japanese:
-            print("日本語フォントが見つかりません。テキストファイルとして保存します。")
+            print(
+                "A required CJK font was not found. Saving a text file instead."
+                if english
+                else "日本語フォントが見つかりません。テキストファイルとして保存します。"
+            )
             txt_path = output_filepath.replace(".pdf", ".txt")
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write(full_text)
-            print(f"テキスト保存: {txt_path}")
+            print(f"Text file saved: {txt_path}" if english else f"テキスト保存: {txt_path}")
             return txt_path
         else:
-            print("日本語フォントが見つかりませんが、アルファベットテキストのため標準フォント(Helvetica)を使用します。")
+            print(
+                "No Japanese font was found; using the standard Helvetica font for English text."
+                if english
+                else "日本語フォントが見つかりませんが、アルファベットテキストのため標準フォント(Helvetica)を使用します。"
+            )
             font_family = "Helvetica"
 
     pdf = FPDF()
@@ -835,29 +990,44 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
         pdf.add_font("Japanese", "", font_path)
         pdf.add_font("Japanese", "B", font_path)
 
+    def pdf_text(value):
+        text = str(value)
+        if font_family == "Helvetica":
+            return text.encode("latin-1", errors="replace").decode("latin-1")
+        return text
+
     pdf.add_page()
 
     # タイトルとヘッダー情報
     if font_family == "Japanese":
         pdf.set_font("Japanese", "B", size=18)
-        pdf.cell(0, 15, document_title or "音声文字起こし",
+        pdf.cell(0, 15, pdf_text(document_title or ("Video Analysis Report" if english else "音声文字起こし")),
                  new_x="LMARGIN", new_y="NEXT", align="C")
         pdf.ln(3)
 
         pdf.set_font("Japanese", "", size=9)
         pdf.set_text_color(100, 100, 100)
         now_value = datetime.datetime.now()
-        now = (
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") if english else (
             f"{now_value:%Y}年{now_value:%m}月{now_value:%d}日 "
             f"{now_value:%H:%M:%S}"
         )
-        pdf.cell(0, 6, f"作成日時: {now}", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Created: {now}" if english else f"作成日時: {now}", new_x="LMARGIN", new_y="NEXT")
         if audio_filename:
-            pdf.cell(0, 6, f"ソースファイル: {audio_filename}", new_x="LMARGIN", new_y="NEXT")
-        pdf.cell(0, 6, f"モデル: {GEMINI_MODEL}", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(
+                0,
+                6,
+                pdf_text(f"Source File: {audio_filename}" if english else f"ソースファイル: {audio_filename}"),
+                new_x="LMARGIN",
+                new_y="NEXT",
+            )
+        pdf.cell(0, 6, f"Model: {GEMINI_MODEL}" if english else f"モデル: {GEMINI_MODEL}", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_font("Helvetica", "B", size=18)
-        pdf.cell(0, 15, document_title or "Audio Transcription",
+        pdf.cell(
+            0,
+            15,
+            pdf_text(document_title or ("Video Analysis Report" if english else "Audio Transcription")),
                  new_x="LMARGIN", new_y="NEXT", align="C")
         pdf.ln(3)
 
@@ -866,7 +1036,7 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         pdf.cell(0, 6, f"Created: {now}", new_x="LMARGIN", new_y="NEXT")
         if audio_filename:
-            pdf.cell(0, 6, f"Source File: {audio_filename}", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 6, pdf_text(f"Source File: {audio_filename}"), new_x="LMARGIN", new_y="NEXT")
         pdf.cell(0, 6, f"Model: {GEMINI_MODEL}", new_x="LMARGIN", new_y="NEXT")
         
     pdf.set_text_color(0, 0, 0)
@@ -878,11 +1048,11 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
 
     # キースライド出力
     if key_slides:
-        if font_family == "Japanese":
+        if not english and font_family == "Japanese":
             pdf.set_font("Japanese", "B", size=14)
             pdf.cell(0, 10, "【 画像解析結果 】", new_x="LMARGIN", new_y="NEXT")
         else:
-            pdf.set_font("Helvetica", "B", size=14)
+            pdf.set_font(font_family, "B", size=14)
             pdf.cell(0, 10, "[ Image Analysis Results ]", new_x="LMARGIN", new_y="NEXT")
             
         pdf.ln(2)
@@ -890,7 +1060,11 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
         
         for i, slide in enumerate(key_slides):
             analysis = slide.get("analysis", {})
-            title = f"解析 {i+1} - {slide['timestamp_str']}"
+            title = (
+                f"Analysis {i+1} - {slide['timestamp_str']}"
+                if english
+                else f"解析 {i+1} - {slide['timestamp_str']}"
+            )
             pdf.set_font(font_family, "B", size=11)
             pdf.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
             pdf.set_font(font_family, "", size=PDF_FONT_SIZE)
@@ -898,7 +1072,13 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
             # 解析結果
             pdf.set_text_color(80, 80, 80)
             score = analysis.get('importance_score', 0)
-            pdf.cell(0, 6, f"重要度: {score}/100", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(
+                0,
+                6,
+                f"Importance: {score}/100" if english else f"重要度: {score}/100",
+                new_x="LMARGIN",
+                new_y="NEXT",
+            )
             pdf.set_text_color(0, 0, 0)
             
             summary = analysis.get('summary', '')
@@ -913,12 +1093,18 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
             if detected_text:
                 pdf.ln(2)
                 pdf.set_font(font_family, "B", size=10)
-                pdf.cell(0, 6, "画像内の主要テキスト", new_x="LMARGIN", new_y="NEXT")
+                pdf.cell(
+                    0,
+                    6,
+                    "Key Text in Image" if english else "画像内の主要テキスト",
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                )
                 pdf.set_font(font_family, "", size=PDF_FONT_SIZE)
                 pdf.multi_cell(
                     0,
                     PDF_LINE_HEIGHT,
-                    detected_text,
+                    pdf_text(detected_text),
                     wrapmode="CHAR" if font_family == "Japanese" else "WORD",
                 )
             
@@ -930,11 +1116,11 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
 
 
     # 全文字起こしのヘッダー
-    if font_family == "Japanese":
+    if not english and font_family == "Japanese":
         pdf.set_font("Japanese", "B", size=14)
         pdf.cell(0, 10, "【 文字起こし全文 (Full Transcript) 】", new_x="LMARGIN", new_y="NEXT")
     else:
-        pdf.set_font("Helvetica", "B", size=14)
+        pdf.set_font(font_family, "B", size=14)
         pdf.cell(0, 10, "[ Full Transcript ]", new_x="LMARGIN", new_y="NEXT")
         
     pdf.ln(2)
@@ -954,8 +1140,8 @@ def create_pdf(full_text, timestamped_text, output_filepath, audio_filename="", 
 
     pdf.output(output_filepath)
     file_size_kb = os.path.getsize(output_filepath) / 1024
-    print(f"PDF保存完了: {output_filepath}")
-    print(f"  サイズ: {file_size_kb:.1f} KB")
+    print(f"PDF saved: {output_filepath}" if english else f"PDF保存完了: {output_filepath}")
+    print(f"  Size: {file_size_kb:.1f} KB" if english else f"  サイズ: {file_size_kb:.1f} KB")
     return output_filepath
 
 

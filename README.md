@@ -20,7 +20,7 @@ Windowsで動作する、録画・動画解析・文字起こしツールです�
 
 ## 📥 Download and install
 
-[![Download ZIP](https://img.shields.io/badge/Download-Latest%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/Gemini-Voice-Transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows.zip)
+[![Download English ZIP](https://img.shields.io/badge/Download-English%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows-English.zip)
 
 From [GitHub Releases](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
 
@@ -82,7 +82,7 @@ If this project is useful, please consider giving it a star ⭐
 
 ## 📥 ダウンロードと初回準備
 
-[![ZIPファイルをダウンロード](https://img.shields.io/badge/ダウンロード-最新版ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/Gemini-Voice-Transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows.zip)
+[![日本語版ZIPをダウンロード](https://img.shields.io/badge/ダウンロード-日本語版ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows-Japanese.zip)
 
 [GitHub Releases](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest)から`Gemini-Video-Analyzer-Windows-Japanese.zip`をダウンロードして解凍します。最初の一回だけPython 3.10以降で必要なライブラリを入れます。
 

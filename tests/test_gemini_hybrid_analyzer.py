@@ -40,8 +40,10 @@ class HybridAnalyzerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             video = root / "video.avi"
-            audio = root / "audio.wav"
             output = root / "result"
+            output.mkdir()
+            # ユーザー指定音声が出力先の中にあっても、完了時に削除しない。
+            audio = output / "user_audio.wav"
             audio.write_bytes(b"mock audio")
 
             writer = cv2.VideoWriter(
@@ -96,10 +98,12 @@ class HybridAnalyzerTests(unittest.TestCase):
                 )
 
             self.assertTrue(Path(result["pdf"]).is_file())
-            self.assertTrue(Path(result["analysis_json"]).is_file())
             self.assertGreaterEqual(result["key_slide_count"], 1)
-            manifest = Path(result["analysis_json"]).read_text(encoding="utf-8")
-            self.assertIn('"raw_video_uploaded": false', manifest)
+            self.assertIsNone(result["analysis_json"])
+            self.assertEqual(
+                {item.resolve() for item in output.iterdir()},
+                {audio.resolve(), Path(result["pdf"]).resolve()},
+            )
 
     @unittest.skipIf(cv2 is None, "OpenCV is not installed")
     def test_resume_reuses_completed_transcription(self):
@@ -181,6 +185,11 @@ class HybridAnalyzerTests(unittest.TestCase):
             transcribe_again.assert_not_called()
             self.assertTrue(result["resumed"])
             self.assertTrue(Path(result["pdf"]).is_file())
+            self.assertFalse(state_path.exists())
+            self.assertEqual(
+                [item.resolve() for item in output.iterdir()],
+                [Path(result["pdf"]).resolve()],
+            )
 
 
 if __name__ == "__main__":

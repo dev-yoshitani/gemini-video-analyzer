@@ -215,10 +215,11 @@ def strip_markdown(text):
 # PDF クラス定義
 # ============================================================
 class MarkdownPDF(FPDF):
-    def __init__(self, font_path, font_path_b):
+    def __init__(self, font_path, font_path_b, language="ja"):
         super().__init__()
         self.font_path = font_path
         self.font_path_b = font_path_b
+        self.language = language
         self.set_auto_page_break(auto=True, margin=20)
         self.add_font("Japanese", "", font_path)
         self.add_font("Japanese", "B", font_path_b)
@@ -257,6 +258,21 @@ class MarkdownPDF(FPDF):
                 for em, rep in EMOJI_MAP.items():
                     text = text.replace(em, rep)
                 text = text.strip()
+
+                # 見出しだけがページ末尾に残らないよう、本文1段落分の
+                # 空きがない場合は見出しから次ページへ送る。
+                next_is_subheading = False
+                for following in blocks[i + 1:]:
+                    if following["type"] in {"empty", "hr"}:
+                        continue
+                    next_is_subheading = (
+                        following["type"] == "heading"
+                        and following["level"] >= 3
+                    )
+                    break
+                heading_break_y = 215 if level == 2 and next_is_subheading else 235
+                if level >= 2 and self.get_y() > heading_break_y:
+                    self.add_page()
                 
                 if level == 1:
                     self.ln(8)
@@ -305,14 +321,25 @@ class MarkdownPDF(FPDF):
                 
                 indent = 6 + (block['indent'] * 2)
                 original_l_margin = self.l_margin
-                self.set_left_margin(original_l_margin + indent)
+                list_x = original_l_margin + indent
+                self.set_left_margin(list_x)
+                self.set_x(list_x)
                 
                 prefix = f"{block['num']}. " if block['ordered'] else "・ "
                 clean_text = strip_markdown(block['text'])
-                
-                self.multi_cell(0, 6, prefix + clean_text, border=0, align="L", new_x="LMARGIN", new_y="NEXT")
+                list_width = self.w - self.r_margin - list_x
+                self.multi_cell(
+                    list_width,
+                    6,
+                    prefix + clean_text,
+                    border=0,
+                    align="L",
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                )
                 
                 self.set_left_margin(original_l_margin)
+                self.set_x(original_l_margin)
                 self.ln(2)
                 i += 1
                 
@@ -356,23 +383,23 @@ class MarkdownPDF(FPDF):
                 if alert_type in ['IMPORTANT', 'WARNING', 'CAUTION']:
                     fill_r, fill_g, fill_b = 254, 242, 242
                     border_r, border_g, border_b = 239, 68, 68
-                    label = "【重要】"
+                    label = "IMPORTANT" if self.language == "en" else "【重要】"
                 elif alert_type == 'TIP':
                     fill_r, fill_g, fill_b = 240, 253, 244
                     border_r, border_g, border_b = 34, 197, 94
-                    label = "【ヒント】"
+                    label = "TIP" if self.language == "en" else "【ヒント】"
                 else:
                     fill_r, fill_g, fill_b = 239, 246, 255
                     border_r, border_g, border_b = 59, 130, 246
-                    label = "【注記】"
+                    label = "NOTE" if self.language == "en" else "【注記】"
                 
                 self.set_font("Japanese", "", 9.5)
                 try:
                     text_h = self.multi_cell(155, 5.5, clean_text, border=0, dry_run=True)
-                    block_h = text_h + 8
+                    block_h = text_h + 13
                 except Exception:
                     approx_lines = max(1, len(clean_text) * 2 // 80)
-                    block_h = approx_lines * 5.5 + 8
+                    block_h = approx_lines * 5.5 + 13
                 
                 if self.get_y() + block_h > 270:
                     self.add_page()
@@ -388,12 +415,14 @@ class MarkdownPDF(FPDF):
                 self.set_font("Japanese", "B", 9.5)
                 self.set_text_color(border_r, border_g, border_b)
                 self.write(5.5, label)
-                
+
                 self.set_font("Japanese", "", 9.5)
                 self.set_text_color(55, 65, 81)
                 
                 original_l_margin = self.l_margin
                 self.set_left_margin(25)
+                self.set_x(25)
+                self.ln(5.5)
                 self.multi_cell(160, 5.5, clean_text, border=0, align="L", new_x="LMARGIN", new_y="NEXT")
                 self.set_left_margin(original_l_margin)
                 
@@ -489,7 +518,8 @@ def convert_md_to_pdf(md_path, pdf_path):
         print("エラー: 日本語フォントが見つかりません。")
         return False
         
-    pdf = MarkdownPDF(font_r, font_b)
+    language = "en" if os.path.basename(md_path).lower().endswith("_en.md") else "ja"
+    pdf = MarkdownPDF(font_r, font_b, language=language)
     pdf.render_blocks(blocks)
     pdf.output(pdf_path)
     print(f"成功: {pdf_path}")

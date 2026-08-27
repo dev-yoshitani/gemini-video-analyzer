@@ -151,10 +151,55 @@ def is_near_duplicate(
     existing: Sequence[FrameSignature],
     duplicate_threshold: float,
 ) -> bool:
-    return any(
-        signature_distance(signature, previous)["score"] <= duplicate_threshold
-        for previous in existing
-    )
+    for previous in existing:
+        metrics = signature_distance(signature, previous)
+        if metrics["score"] <= duplicate_threshold:
+            return True
+
+        # 色のハイライト、選択状態、カーソルなどが変化しても、文字や画面構造が
+        # ほぼ同じなら同一内容として扱う。新しい文字が追加された場合は
+        # perceptual hash と edge の差が大きくなるため残る。
+        same_content = (
+            metrics["hash"] <= 0.07
+            and metrics["edge"] <= 0.012
+            and metrics["changed"] <= 0.08
+        )
+        if same_content:
+            return True
+    return False
+
+
+def deduplicate_image_candidates(
+    frames: Sequence[dict[str, Any]],
+    duplicate_threshold: float = 0.08,
+) -> tuple[list[dict[str, Any]], int]:
+    """画像解析の前に、見た目や内容がほぼ同じ候補をローカルで除外する。"""
+    _require_vision_dependencies()
+    unique_frames: list[dict[str, Any]] = []
+    signatures: list[FrameSignature] = []
+    removed = 0
+
+    for frame_info in frames:
+        image_path = Path(frame_info["path"])
+        try:
+            encoded = np.frombuffer(image_path.read_bytes(), dtype=np.uint8)
+            image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        except OSError:
+            image = None
+
+        # 読み取れない画像はここで失わず、後段で明確なエラーを出せるよう残す。
+        if image is None:
+            unique_frames.append(frame_info)
+            continue
+
+        signature = make_signature(image)
+        if is_near_duplicate(signature, signatures, duplicate_threshold):
+            removed += 1
+            continue
+        unique_frames.append(frame_info)
+        signatures.append(signature)
+
+    return unique_frames, removed
 
 
 def is_meaningful_scene_change(metrics: dict[str, float], scene_threshold: float) -> bool:
@@ -211,12 +256,16 @@ def extract_scenes(
     min_scene_duration: float = 0.75,
     settle_duration: float = 1.25,
     ignore_bottom_ratio: float = 0.14,
+    language: str = "ja",
 ) -> tuple[list[Scene], dict[str, float]]:
     """一定間隔ではなく、安定して成立したシーン変化だけを画像化する。"""
     _require_vision_dependencies()
+    english = language == "en"
     scenes_dir.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(os.fspath(video_path))
     if not capture.isOpened():
+        if english:
+            raise RuntimeError(f"Could not open the video: {video_path}")
         raise RuntimeError(f"動画を開けません: {video_path}")
 
     fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
@@ -238,11 +287,18 @@ def extract_scenes(
     sampled = 0
     rejected_duplicates = 0
 
-    print("\n[1/3] シーン変化を解析中...")
-    print(
-        f"  長さ: {format_timestamp(duration, milliseconds=False)} / "
-        f"走査: {scan_fps:g} fps / 変化閾値: {scene_threshold:.2f}"
-    )
+    if english:
+        print("\n[1/3] Detecting meaningful scene changes...")
+        print(
+            f"  Duration: {format_timestamp(duration, milliseconds=False)} / "
+            f"Scan rate: {scan_fps:g} fps / Change threshold: {scene_threshold:.2f}"
+        )
+    else:
+        print("\n[1/3] シーン変化を解析中...")
+        print(
+            f"  長さ: {format_timestamp(duration, milliseconds=False)} / "
+            f"走査: {scan_fps:g} fps / 変化閾値: {scene_threshold:.2f}"
+        )
 
     try:
         while capture.grab():
@@ -312,7 +368,10 @@ def extract_scenes(
                     scenes_dir,
                 )
                 accepted_signatures.append(candidate_signature)
-                print(f"  {scene.index:03d}: {scene.timestamp}  変化量 {scene.change_score:.3f}")
+                if english:
+                    print(f"  {scene.index:03d}: {scene.timestamp}  change {scene.change_score:.3f}")
+                else:
+                    print(f"  {scene.index:03d}: {scene.timestamp}  変化量 {scene.change_score:.3f}")
 
             # 重複で保存しなくても現時点を基準にし、同じ候補の連続検出を防ぐ。
             reference_signature = candidate_signature
@@ -341,12 +400,23 @@ def extract_scenes(
                     final_metrics["score"],
                     scenes_dir,
                 )
-                print(f"  {scene.index:03d}: {scene.timestamp}  変化量 {scene.change_score:.3f}")
+                if english:
+                    print(f"  {scene.index:03d}: {scene.timestamp}  change {scene.change_score:.3f}")
+                else:
+                    print(f"  {scene.index:03d}: {scene.timestamp}  変化量 {scene.change_score:.3f}")
 
     if not scenes:
+        if english:
+            raise RuntimeError("No frames could be read from the video. Check the video format.")
         raise RuntimeError("動画からフレームを読み取れませんでした。動画形式を確認してください。")
 
-    print(f"  完了: {len(scenes)}場面を採用（類似 {rejected_duplicates}場面を除外）")
+    if english:
+        print(
+            f"  Complete: selected {len(scenes)} scenes "
+            f"(removed {rejected_duplicates} similar scenes)"
+        )
+    else:
+        print(f"  完了: {len(scenes)}場面を採用（類似 {rejected_duplicates}場面を除外）")
     metadata = {
         "duration_sec": round(duration, 3),
         "fps": round(fps, 3),

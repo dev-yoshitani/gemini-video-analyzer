@@ -26,6 +26,51 @@ class SignatureTests(unittest.TestCase):
             analyzer.is_near_duplicate(second_signature, [first_signature], 0.10)
         )
 
+    def test_color_highlight_is_treated_as_the_same_content(self):
+        first = analyzer.np.full((720, 1280, 3), 245, dtype=analyzer.np.uint8)
+        analyzer.cv2.putText(
+            first, "PROJECT ROADMAP", (90, 150),
+            analyzer.cv2.FONT_HERSHEY_SIMPLEX, 2, (20, 20, 20), 5,
+        )
+        analyzer.cv2.putText(
+            first, "Goal A", (130, 280),
+            analyzer.cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50, 50, 50), 3,
+        )
+        second = first.copy()
+        analyzer.cv2.rectangle(second, (100, 230), (500, 310), (180, 240, 255), -1)
+        analyzer.cv2.putText(
+            second, "Goal A", (130, 280),
+            analyzer.cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50, 50, 50), 3,
+        )
+
+        self.assertTrue(
+            analyzer.is_near_duplicate(
+                analyzer.make_signature(second),
+                [analyzer.make_signature(first)],
+                0.08,
+            )
+        )
+
+    def test_new_text_is_not_treated_as_the_same_content(self):
+        first = analyzer.np.full((720, 1280, 3), 245, dtype=analyzer.np.uint8)
+        analyzer.cv2.putText(
+            first, "PROJECT ROADMAP", (90, 150),
+            analyzer.cv2.FONT_HERSHEY_SIMPLEX, 2, (20, 20, 20), 5,
+        )
+        second = first.copy()
+        analyzer.cv2.putText(
+            second, "NEW IMPORTANT RESULT", (90, 520),
+            analyzer.cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 0, 0), 4,
+        )
+
+        self.assertFalse(
+            analyzer.is_near_duplicate(
+                analyzer.make_signature(second),
+                [analyzer.make_signature(first)],
+                0.08,
+            )
+        )
+
     def test_small_subject_motion_is_not_treated_as_a_scene_change(self):
         first = analyzer.np.full((180, 320, 3), 230, dtype=analyzer.np.uint8)
         second = first.copy()

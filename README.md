@@ -1,4 +1,4 @@
-# 🎙️ Gemini Video Analyzer（動画解析・文字起こしツール）
+# 🎞️ Gemini Video Analyzer（動画解析・文字起こしツール）
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -7,6 +7,20 @@
 A Windows desktop application that records or analyzes video, selects meaningful scene changes locally, and uses the Gemini API for transcription and analysis. The recommended workflow keeps the recording and a structured PDF report.
 
 Windowsで動作する、録画・動画解析・文字起こしツールです。PC内で重要な場面候補を選別し、Gemini APIを活用して整形済みPDFを自動生成します。
+
+---
+
+## Workflow
+
+```text
+record or select a video
+  → extract audio and scene candidates locally
+  → review the cloud-processing notice
+  → send audio and selected images to Gemini
+  → keep the recording, PC audio, and structured PDF report
+```
+
+The complete source video is not uploaded. The application sends the extracted audio and locally selected candidate images only after confirmation. API usage and data handling are subject to the Gemini API terms and the user's Google AI Studio plan.
 
 ---
 
@@ -20,14 +34,14 @@ Windowsで動作する、録画・動画解析・文字起こしツールです�
 
 ## 📥 Download and install
 
-[![Download English ZIP](https://img.shields.io/badge/Download-English%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows-English.zip)
+[![Download English ZIP](https://img.shields.io/badge/Download-English%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/gemini-video-analyzer/releases/latest/download/Gemini-Video-Analyzer-Windows-English.zip)
 
-From [GitHub Releases](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
+From [GitHub Releases](https://github.com/yoshitani-dev/gemini-video-analyzer/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
 
 ### ✨ Features
 - **Real-time System Audio Recording**: Captures computer internal audio using WASAPI loopback.
 - **Pre-recording Audio Test**: Checks the actual system-audio level for three seconds before screen recording begins.
-- **High-accuracy AI Transcription**: Powered by Google's Gemini API (`gemini-3.5-flash`, with automatic fallback to `gemini-2.5-flash` and `gemini-3.1-flash-lite` when rate-limited or busy).
+- **Gemini transcription and analysis**: Uses `gemini-3.5-flash`, with automatic fallback to `gemini-2.5-flash` and `gemini-3.1-flash-lite` when the primary model is rate-limited or busy.
 - **Automatic Rate-limit Recovery**: Waits and retries automatically for temporary 429/503 errors. Completed stages and images are reused after interruption.
 - **🆕 Video Key Slide Extraction**: Automatically extracts important slides, charts, and documents from recorded videos using Gemini's vision capabilities.
 - **Filler Word Removal**: Automatically strips out filler words (e.g., "uhm", "uh", "like") and resolves hallucinated repetitions.
@@ -73,6 +87,17 @@ The English workflow creates an English transcript and English frame analysis. E
 
 The Japanese workflow, including the legacy audio-only tool, remains available from `Start.bat`.
 
+On success, a recording session keeps this user-facing output:
+
+```text
+output/local_recordings/Recording_<timestamp>/
+├── Screen Recording.mp4
+├── PC Audio.wav
+└── <generated-title>_Analysis_Report.pdf
+```
+
+The exact localized file names depend on the selected language. Intermediate candidate images and analysis state are removed only after the PDF is created successfully; interrupted work can be resumed.
+
 If this project is useful, please consider giving it a star ⭐
 ---
 
@@ -82,14 +107,14 @@ If this project is useful, please consider giving it a star ⭐
 
 ## 📥 ダウンロードと初回準備
 
-[![日本語版ZIPをダウンロード](https://img.shields.io/badge/ダウンロード-日本語版ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest/download/Gemini-Video-Analyzer-Windows-Japanese.zip)
+[![日本語版ZIPをダウンロード](https://img.shields.io/badge/ダウンロード-日本語版ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/gemini-video-analyzer/releases/latest/download/Gemini-Video-Analyzer-Windows-Japanese.zip)
 
-[GitHub Releases](https://github.com/yoshitani-dev/gemini-voice-transcriber/releases/latest)から`Gemini-Video-Analyzer-Windows-Japanese.zip`をダウンロードして解凍します。最初の一回だけPython 3.10以降で必要なライブラリを入れます。
+[GitHub Releases](https://github.com/yoshitani-dev/gemini-video-analyzer/releases/latest)から`Gemini-Video-Analyzer-Windows-Japanese.zip`をダウンロードして解凍します。最初の一回だけPython 3.10以降で必要なライブラリを入れます。
 
 ### ✨ 主な機能
 - **PCシステム音声録音**: WASAPIループバックを使用し、会議や動画の音声をクリアに直接録音。
 - **録画前の音声テスト**: 録画開始前にPC音声を3秒間確認し、無音やデバイス異常のまま長時間録画することを防止。
-- **高精度AI文字起こし**: Googleの `gemini-3.5-flash` を使用（制限・混雑時は `gemini-2.5-flash`、さらに `gemini-3.1-flash-lite` へ自動切り替え）。
+- **Geminiによる文字起こし・解析**: `gemini-3.5-flash` を使用（制限・混雑時は `gemini-2.5-flash`、さらに `gemini-3.1-flash-lite` へ自動切り替え）。
 - **API制限からの自動復旧**: 一時的な429/503エラーでは段階的に待機して自動再試行。中断後も完了済みの工程と画像解析を再利用。
 - **🆕 動画キースライド抽出**: 会議や授業の録画動画から、重要なスライド・チャート・資料をGeminiのAI解析で自動抽出。文字起こしと統合したリッチ議事録を生成。
 - **つなぎ言葉（フィラー）の自動除去**: 「えーっと」「あのー」などを自動で取り除き、同じ言葉が連続するループ現象（ハルシネーション）も自動で除去。
@@ -151,6 +176,12 @@ py -3 -m pip install -r requirements-app.txt
 - [x] Support export as Markdown / Markdown形式での書き出しサポート
 - [ ] Real-time progressive transcription / リアルタイム順次文字起こし表示
 - [ ] Support macOS (CoreAudio) / macOSへの対応
+
+---
+
+## Repository rename and compatibility
+
+The repository was renamed from `gemini-voice-transcriber` to `gemini-video-analyzer` because the primary workflow now covers recording, local scene selection, Gemini analysis, transcription, and PDF reporting. Legacy internal names such as `audio_transcriber.py` and `Gemini_CLI_Transcriber` remain unchanged so existing launchers and scripts keep working.
 
 ---
 

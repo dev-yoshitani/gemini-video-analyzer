@@ -10,6 +10,12 @@ Windowsで動作する、録画・動画解析・文字起こしツールです�
 
 ---
 
+## 実装のポイント / Engineering highlights
+
+- [録画](local_screen_recorder.py)・[ローカル動画処理](local_video_analyzer.py)と、[Gemini連携・PDF生成](gemini_hybrid_analyzer.py)を分離。
+- APIの一時エラーに対する[再試行](gemini_retry.py)と、処理済み結果を保存した途中再開に対応。
+- [テスト](tests/)と[日英の配布物](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest)を用意。WindowsとGemini APIキーが必要です。
+
 ## Workflow
 
 ```text
@@ -34,9 +40,9 @@ The complete source video is not uploaded. The application sends the extracted a
 
 ## 📥 Download and install
 
-[![Download English ZIP](https://img.shields.io/badge/Download-English%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/gemini-video-analyzer/releases/latest/download/Gemini-Video-Analyzer-Windows-English.zip)
+[![Download English ZIP](https://img.shields.io/badge/Download-English%20ZIP-green?style=for-the-badge&logo=github)](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest/download/Gemini-Video-Analyzer-Windows-English.zip)
 
-From [GitHub Releases](https://github.com/yoshitani-dev/gemini-video-analyzer/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
+From [GitHub Releases](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
 
 ### ✨ Features
 - **Real-time System Audio Recording**: Captures computer internal audio using WASAPI loopback.
@@ -107,9 +113,9 @@ If this project is useful, please consider giving it a star ⭐
 
 ## 📥 ダウンロードと初回準備
 
-[![日本語版ZIPをダウンロード](https://img.shields.io/badge/ダウンロード-日本語版ZIP-green?style=for-the-badge&logo=github)](https://github.com/yoshitani-dev/gemini-video-analyzer/releases/latest/download/Gemini-Video-Analyzer-Windows-Japanese.zip)
+[![日本語版ZIPをダウンロード](https://img.shields.io/badge/ダウンロード-日本語版ZIP-green?style=for-the-badge&logo=github)](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest/download/Gemini-Video-Analyzer-Windows-Japanese.zip)
 
-[GitHub Releases](https://github.com/yoshitani-dev/gemini-video-analyzer/releases/latest)から`Gemini-Video-Analyzer-Windows-Japanese.zip`をダウンロードして解凍します。最初の一回だけPython 3.10以降で必要なライブラリを入れます。
+[GitHub Releases](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest)から`Gemini-Video-Analyzer-Windows-Japanese.zip`をダウンロードして解凍します。最初の一回だけPython 3.10以降で必要なライブラリを入れます。
 
 ### ✨ 主な機能
 - **PCシステム音声録音**: WASAPIループバックを使用し、会議や動画の音声をクリアに直接録音。

@@ -10,9 +10,9 @@ Windowsで動作する、録画・動画解析・文字起こしツールです�
 
 ## 新しい操作画面 / Desktop interface
 
-現在のソース版では、`Start.bat` / `Start_EN.bat` からボタン式の操作画面が開きます。「録画する」「動画を選ぶ」「結果を見る」が主な操作です。設定で言語・録画保存先・画像枚数と音声時間の上限を変更できます。詳細と復旧時の注意点は [操作ガイド](USAGE.md) を参照してください。既存のGitHub配布ZIPは、この変更を含むリリースが公開されるまでは旧版のままです。
+v2.2.0では、`Start.bat` / `Start_EN.bat` からボタン式の操作画面が開きます。「録画する」「動画を選ぶ」「結果を見る」が主な操作です。設定で言語・録画保存先・画像枚数と音声時間の上限を変更できます。詳細と復旧時の注意点は [操作ガイド](USAGE.md) を参照してください。
 
-The current source version opens a desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Choose video**, and **View results**. Settings control language, recording folder, image count and audio duration limits. See the [usage and recovery guide](USAGE.md). Previously published ZIPs do not include these changes until a new release is published.
+Version 2.2.0 opens a desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Choose video**, and **View results**. Settings control language, recording folder, image count and audio duration limits. See the [usage and recovery guide](USAGE.md).
 
 ---
 
@@ -97,7 +97,7 @@ The English workflow creates an English transcript and English frame analysis. E
 > - Please ensure you hide sensitive information before starting.
 > - Ensure you have permission to record the meeting.
 
-The Japanese workflow, including the legacy audio-only tool, remains available from `Start.bat`.
+The Japanese interface is available from `Start.bat`. The legacy audio-only menu remains available through `python launcher.py`.
 
 On success, a recording session keeps this user-facing output:
 
@@ -105,7 +105,8 @@ On success, a recording session keeps this user-facing output:
 output/local_recordings/Recording_<timestamp>/
 ├── Screen Recording.mp4
 ├── PC Audio.wav
-└── <generated-title>_Analysis_Report.pdf
+└── Analysis Results/
+    └── <generated-title>_Analysis_Report.pdf
 ```
 
 The exact localized file names depend on the selected language. Intermediate candidate images and analysis state are removed only after the PDF is created successfully; interrupted work can be resumed.

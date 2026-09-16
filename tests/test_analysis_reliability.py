@@ -146,7 +146,8 @@ class PdfCompletionTests(unittest.TestCase):
                     result = hybrid.resume_analysis(output / hybrid.STATE_FILENAME, require_consent=False)
                 self.assertTrue(Path(result["pdf"]).exists())
                 self.assertEqual(transcribe.call_count, 1)
-                self.assertEqual(list(output.iterdir()), [Path(result["pdf"])])
+                self.assertEqual([item.resolve() for item in output.iterdir()],
+                                 [Path(result["pdf"]).resolve()])
 
 
 if __name__ == "__main__":

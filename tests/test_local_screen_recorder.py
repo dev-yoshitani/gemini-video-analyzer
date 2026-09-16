@@ -57,9 +57,11 @@ class SystemAudioRecorderTests(unittest.TestCase):
         class BlockingStream:
             def __init__(self):
                 self.released = threading.Event()
+                self.reading = threading.Event()
                 self.stopped = False
 
             def read(self, _size, exception_on_overflow=False):
+                self.reading.set()
                 self.released.wait(timeout=2)
                 return b"\x00\x00" * 4
 
@@ -86,6 +88,7 @@ class SystemAudioRecorderTests(unittest.TestCase):
             audio.wave_file = FakeWave()
             audio.thread = threading.Thread(target=audio._worker, daemon=True)
             audio.thread.start()
+            self.assertTrue(stream.reading.wait(timeout=2))
 
             self.assertTrue(audio.stop())
             self.assertTrue(stream.stopped)

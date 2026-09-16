@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import datetime
+import unicodedata
 from pathlib import Path
 
 
@@ -125,6 +126,31 @@ def _analysis_contains_japanese(analysis):
         _contains_japanese_text(analysis.get(field, ""))
         for field in ("summary", "detected_text", "reason")
     )
+
+
+def is_valid_analysis(analysis):
+    """Accept completed model responses, never legacy failure placeholders."""
+    if not isinstance(analysis, dict):
+        return False
+    score = analysis.get("importance_score")
+    return (
+        type(analysis.get("is_key_slide")) is bool
+        and type(score) is int and 0 <= score <= 100
+        and analysis.get("frame_type") in (
+            "slide", "chart", "document", "whiteboard", "screen_share",
+            "speaker_view", "other",
+        )
+        and all(isinstance(analysis.get(field), str)
+                for field in ("summary", "detected_text", "reason"))
+        and bool(analysis["reason"].strip())
+        and analysis["reason"] != "analysis failed or skipped"
+        and (not analysis["is_key_slide"] or bool(analysis["summary"].strip()))
+    )
+
+
+def _number_tokens(text):
+    # Retain changed values even if the surrounding explanation is identical.
+    return tuple(re.findall(r"[+-]?\d+(?:[.,]\d+)*", unicodedata.normalize("NFKC", text)))
 
 
 def _build_english_analysis_cleanup_prompt(items):
@@ -315,17 +341,8 @@ class KeySlideExtractor:
             transcript_text (str, optional): 音声文字起こし全文（文脈として使用）
 
         Returns:
-            dict: 解析結果。失敗時はデフォルト値を返す。
+            dict: 検証済みの解析結果。失敗時は例外を送出して再開用データを残す。
         """
-        default_result = {
-            "is_key_slide": False,
-            "importance_score": 0,
-            "frame_type": "other",
-            "summary": "",
-            "detected_text": "",
-            "reason": "analysis failed or skipped",
-        }
-
         if self.language == "en":
             prompt = _build_english_frame_analysis_prompt(transcript_text)
         else:
@@ -372,7 +389,10 @@ class KeySlideExtractor:
                 if self.language == "en"
                 else f"    画像読み込みエラー: {e}"
             )
-            return default_result
+            raise RuntimeError(
+                "Could not read the scene image. Progress can be resumed."
+                if self.language == "en" else "場面画像を読み取れません。途中から再開できます。"
+            ) from e
 
         from google.genai import types as genai_types
         from gemini_retry import call_with_gemini_retry, is_retryable_gemini_error
@@ -418,16 +438,13 @@ class KeySlideExtractor:
                             text = "".join(parts_text)
 
                     if not text:
-                        continue
+                        raise ValueError("Empty frame-analysis response")
 
                     # JSONの抽出とパース
                     parsed = self._extract_json(text)
-                    if parsed:
-                        # 必須フィールドの検証と補完
-                        result = {**default_result, **parsed}
-                        result["is_key_slide"] = bool(result.get("is_key_slide", False))
-                        result["importance_score"] = int(result.get("importance_score", 0))
-                        return result
+                    if is_valid_analysis(parsed):
+                        return parsed
+                    raise ValueError("Invalid frame-analysis response")
 
                 except Exception as exc:
                     last_error = exc
@@ -447,13 +464,11 @@ class KeySlideExtractor:
 
             if last_retryable_error is not None:
                 raise last_retryable_error
-            if last_error is not None:
-                print(
-                    f"    Image analysis skipped: {last_error}"
-                    if self.language == "en"
-                    else f"    画像解析をスキップしました: {last_error}"
-                )
-            return default_result
+            raise RuntimeError(
+                "Scene analysis failed. Saved progress can be resumed."
+                if self.language == "en"
+                else "場面の解析に失敗しました。保存済みの処理から再開できます。"
+            ) from last_error
 
         # 制限が解除されるまで段階的に待機する。最終的に失敗した場合は
         # 例外を上位へ渡し、解析済み画像の進捗を残して途中再開できるようにする。
@@ -514,17 +529,27 @@ class KeySlideExtractor:
         skipped = 0
 
         for i, frame in enumerate(frames):
+            from workflow_control import checkpoint, notify
+            from timeline_analysis import scene_context
+            checkpoint()
+            notify(kind="progress", stage="images", current=i + 1, total=len(frames))
             progress = f"[{i+1}/{len(frames)}]"
             print(f"  {progress} {frame['filename']} (t={frame['timestamp_str']})...", end=" ")
 
-            if skip_analyzed and frame.get("analysis"):
+            if skip_analyzed and is_valid_analysis(frame.get("analysis")):
                 print(" [reused]" if self.language == "en" else " [再利用]")
                 analyzed.append(frame)
                 if progress_callback:
                     progress_callback(analyzed)
                 continue
 
-            result = self.analyze_frame_with_gemini(frame["path"], client, transcript_text=transcript_text)
+            context = transcript_text
+            if getattr(self, "transcript_segments", None):
+                start = frame["timestamp_sec"]
+                end = min(frames[i + 1]["timestamp_sec"], start + 60) if i + 1 < len(frames) else start + 60
+                previous = analyzed[-1].get("analysis", {}).get("summary", "") if analyzed else ""
+                context = scene_context(self.transcript_segments, start, end, previous, self.language)
+            result = self.analyze_frame_with_gemini(frame["path"], client, transcript_text=context)
             frame["analysis"] = result
 
             if result["importance_score"] == 0 and result["reason"] == "analysis failed or skipped":
@@ -551,9 +576,11 @@ class KeySlideExtractor:
             )
 
         if self.language == "en":
-            analyzed = self._normalize_english_analyses(analyzed, client)
-            if progress_callback:
-                progress_callback(analyzed)
+            try:
+                analyzed = self._normalize_english_analyses(analyzed, client)
+            finally:
+                if progress_callback:
+                    progress_callback(analyzed)
 
         return analyzed
 
@@ -617,45 +644,36 @@ class KeySlideExtractor:
                 raise last_error
             raise RuntimeError("Gemini returned no valid English cleanup result.")
 
-        cleaned_items = []
-        try:
-            cleaned_items = call_with_gemini_retry(
-                cleanup_once,
-                description="English frame-analysis cleanup",
-                language="en",
-            )
-        except Exception as exc:
-            print(f"  Warning: English cleanup failed: {exc}")
+        cleaned_items = call_with_gemini_retry(
+            cleanup_once,
+            description="English frame-analysis cleanup",
+            language="en",
+        )
 
         cleaned_by_index = {
             item.get("index"): item
             for item in cleaned_items
             if isinstance(item, dict) and isinstance(item.get("index"), int)
         }
-        fallback_text = {
-            "summary": (
-                "This frame contains relevant visual information, but an English "
-                "summary could not be produced reliably."
-            ),
-            "detected_text": (
-                "Visible interface text was detected, but a reliable English "
-                "translation was unavailable."
-            ),
-            "reason": (
-                "The frame's importance could not be described reliably in English."
-            ),
-        }
-
+        incomplete = False
         for original in affected:
             index = original["index"]
             analysis = frames[index].setdefault("analysis", {})
             cleaned = cleaned_by_index.get(index, {})
             for field in ("summary", "detected_text", "reason"):
-                candidate = str(cleaned.get(field, "")).strip()
-                if candidate and not _contains_japanese_text(candidate):
+                if not _contains_japanese_text(analysis.get(field, "")):
+                    continue
+                candidate = cleaned.get(field)
+                if isinstance(candidate, str) and candidate.strip() and not _contains_japanese_text(candidate):
                     analysis[field] = candidate
-                elif _contains_japanese_text(analysis.get(field, "")):
-                    analysis[field] = fallback_text[field]
+                else:
+                    incomplete = True
+
+        if incomplete:
+            raise RuntimeError(
+                "English translation is incomplete. Original analysis was preserved; "
+                "resume the job to retry translation."
+            )
 
         return frames
 
@@ -699,12 +717,20 @@ class KeySlideExtractor:
                     key_frames[j]["analysis"].get("summary", "") + " " + key_frames[j]["analysis"].get("detected_text", ""),
                 )
 
+                left = key_frames[i]["analysis"]
+                right = key_frames[j]["analysis"]
+                if _number_tokens(left.get("summary", "") + " " + left.get("detected_text", "")) != _number_tokens(
+                    right.get("summary", "") + " " + right.get("detected_text", "")
+                ):
+                    continue
+
                 if similarity >= 0.70:
                     # 重複ペアのうちスコアが低い方を除外
                     if key_frames[i]["analysis"]["importance_score"] >= key_frames[j]["analysis"]["importance_score"]:
                         to_remove.add(j)
                     else:
                         to_remove.add(i)
+                        break
 
         removed_count = len(to_remove)
         deduplicated_keys = [f for idx, f in enumerate(key_frames) if idx not in to_remove]

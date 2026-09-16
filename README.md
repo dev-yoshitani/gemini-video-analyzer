@@ -8,6 +8,12 @@ A Windows desktop application that records or analyzes video, selects meaningful
 
 Windowsで動作する、録画・動画解析・文字起こしツールです。PC内で重要な場面候補を選別し、Gemini APIを活用して整形済みPDFを自動生成します。
 
+## 新しい操作画面 / Desktop interface
+
+現在のソース版では、`Start.bat` / `Start_EN.bat` からボタン式の操作画面が開きます。「録画する」「動画を選ぶ」「結果を見る」が主な操作です。設定で言語・録画保存先・画像枚数と音声時間の上限を変更できます。詳細と復旧時の注意点は [操作ガイド](USAGE.md) を参照してください。既存のGitHub配布ZIPは、この変更を含むリリースが公開されるまでは旧版のままです。
+
+The current source version opens a desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Choose video**, and **View results**. Settings control language, recording folder, image count and audio duration limits. See the [usage and recovery guide](USAGE.md). Previously published ZIPs do not include these changes until a new release is published.
+
 ---
 
 ## Language / 言語
@@ -56,9 +62,9 @@ py -3 -m pip install -r requirements-app.txt
 
 Double-click **Start_EN.bat** for the English workflow. It offers these choices:
 
-1. Record and create a high-accuracy English AI analysis report.
-2. Analyze an existing video and create an English report.
-3. Resume an interrupted English analysis.
+1. **Record**: select an area, pass the audio test, then pause or finish using buttons.
+2. **Choose video**: select a saved video for analysis.
+3. **Resume selected**: continue an unfinished job or recover finalized recording chunks.
 
 You can also drag a video file onto **Start_EN.bat** to analyze it. Before recording, choose the full desktop, one monitor, or a mouse-selected area. Start playback on the PC before the three-second audio test; recording starts only after sound is detected.
 
@@ -97,7 +103,7 @@ If this project is useful, please consider giving it a star ⭐
 
 ### 🎯 高精度AI解析 + PDF（推奨）
 
-`Start.bat` の「高精度AI解析」では、録画または保存済み動画からPC内でシーン候補と音声を取り出し、`Gemini 3.5 Flash` で文字起こしと画像内容の解析を行います。制限・混雑時は `Gemini 2.5 Flash`、さらに `Gemini 3.1 Flash-Lite` へ自動で切り替わります。元動画全体は送信せず、音声と候補画像だけを確認後に送信します。
+`Start.bat` の「録画する」「動画を選ぶ」から、PC内でシーン候補と音声を取り出し、Geminiで文字起こしと画像内容の解析を行います。元動画全体は送信せず、音声と候補画像だけを確認後に送信します。
 
 出力PDFには画像そのものを埋め込まず、各場面の時刻・重要度・画像解析の説明・画像内で検出した主要テキストと、文字起こし全文をまとめます。抽出画像などの中間ファイルはPDF完成後に自動削除します。
 
@@ -107,7 +113,7 @@ If this project is useful, please consider giving it a star ⭐
 py -3 -m pip install -r requirements-app.txt
 ```
 
-普段はメイン起動ファイルの `Start.bat` だけを使います。録画開始前に「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」から録画範囲を選びます。PCで音声を再生した状態でEnterキーを押すと3秒間の音声テストを行い、音が確認できた場合だけ録画を開始します。その後の解析とPDF生成まで自動で進みます。既存動画を `Start.bat` にドラッグ＆ドロップした場合は、高精度AI解析の送信確認画面が開きます。
+普段は `Start.bat` を開きます。「録画する」では録画範囲を選択後、3秒間の音声テストを行います。「録画を終了して解析」を押し、クラウド送信に同意するとPDF生成まで進みます。動画を `Start.bat` にドラッグ＆ドロップする方法も利用できます。従来のコンソール画面は `python launcher.py` から利用できます。
 
 高精度AI解析中に一時的なAPI制限や混雑を検出すると、待機時間を段階的に延ばしながら自動再試行します。それでも完了できない場合やアプリを終了した場合は、シーン候補・文字起こし・画像ごとの解析結果が自動保存されます。次回 `Start.bat` の「未完了の高精度AI解析を途中から再開」を選ぶと、完了済みの処理を再利用し、残りから続行します。
 

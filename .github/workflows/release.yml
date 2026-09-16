@@ -30,14 +30,18 @@ jobs:
 
       - name: Verify the application
         run: |
-          python -m py_compile audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py
-          flake8 audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py tests --count --select=E9,F63,F7,F82 --show-source --statistics
+          python -m py_compile audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py desktop_app.py timeline_analysis.py recording_recovery.py workflow_control.py
+          flake8 audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py desktop_app.py timeline_analysis.py recording_recovery.py workflow_control.py tests --count --select=E9,F63,F7,F82 --show-source --statistics
           python -m unittest discover -s tests -v
 
       - name: Prepare Japanese and English packages
         shell: pwsh
         run: |
           $commonFiles = @(
+            'desktop_app.py',
+            'workflow_control.py',
+            'timeline_analysis.py',
+            'recording_recovery.py',
             'launcher.py',
             'local_screen_recorder.py',
             'local_video_analyzer.py',
@@ -49,6 +53,7 @@ jobs:
             'requirements-local.txt',
             'requirements-app.txt',
             'README.md',
+            'USAGE.md',
             'LICENSE',
             '.env.example'
           )

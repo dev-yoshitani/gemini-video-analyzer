@@ -10,6 +10,8 @@ import sys
 import threading
 import time
 import wave
+import tempfile
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -276,8 +278,14 @@ class DesktopRecorder:
         fps: float = 10.0,
         capture_region: dict[str, int] | None = None,
         language: str = "ja",
+        segment_seconds: float = 60.0,
+        pause_event=None,
     ):
         self.output_base = output_base
+        self.segment_seconds = segment_seconds
+        self.pause_event = pause_event or threading.Event()
+        self.parts = []
+        self.parts_dir = output_base.parent / ".recording_parts"
         self.fps = fps
         self.output_path: Path | None = None
         self.stop_event = threading.Event()
@@ -291,10 +299,11 @@ class DesktopRecorder:
         self.requested_region = capture_region
         self.language = "en" if language == "en" else "ja"
 
-    def _open_writer(self, width: int, height: int) -> tuple[Any, Path]:
+    def _open_writer(self, width: int, height: int, base=None) -> tuple[Any, Path]:
+        base = base or self.output_base
         candidates = [
-            (self.output_base.with_suffix(".mp4"), "mp4v"),
-            (self.output_base.with_suffix(".avi"), "MJPG"),
+            (base.with_suffix(".mp4"), "mp4v"),
+            (base.with_suffix(".avi"), "MJPG"),
         ]
         for path, codec in candidates:
             writer = cv2.VideoWriter(
@@ -324,7 +333,9 @@ class DesktopRecorder:
         self.width = monitor["width"]
         self.height = monitor["height"]
         self.monitor = monitor
-        self.writer, self.output_path = self._open_writer(self.width, self.height)
+        self.parts_dir.mkdir(parents=True, exist_ok=True)
+        self.writer, self.chunk_path = self._open_writer(self.width, self.height, self.parts_dir / "video_00000")
+        self.output_path = self.output_base.with_suffix(".mp4")
         self.stop_event.clear()
         self.frames_written = 0
         self.error = None
@@ -333,16 +344,36 @@ class DesktopRecorder:
         return self.output_path
 
     def _worker(self) -> None:
+        from recording_recovery import save_parts
         frame_interval = 1.0 / self.fps
         next_frame_at = time.perf_counter()
+        chunk_frames = 0
         try:
             with mss.mss() as capture:
                 while not self.stop_event.is_set():
+                    if self.pause_event.is_set():
+                        self.stop_event.wait(0.03)
+                        next_frame_at = time.perf_counter()
+                        continue
                     shot = capture.grab(self.monitor)
                     frame = np.asarray(shot, dtype=np.uint8)[:self.height, :self.width, :3]
-                    self.writer.write(frame)
-                    self.frames_written += 1
-                    next_frame_at += frame_interval
+                    # Maintain wall-clock duration under capture/encoder lag instead of
+                    # speeding up the video relative to the audio.
+                    due = max(1, int((time.perf_counter() - next_frame_at) / frame_interval) + 1)
+                    for _ in range(due):
+                        if self.stop_event.is_set():
+                            break
+                        self.writer.write(frame)
+                        self.frames_written += 1
+                        chunk_frames += 1
+                        if chunk_frames >= max(1, round(self.segment_seconds * self.fps)):
+                            self.writer.release()
+                            self.parts.append(self.chunk_path)
+                            chunk_frames = 0
+                            save_parts(self.parts_dir, "video", self.parts, fps=self.fps)
+                            self.writer, self.chunk_path = self._open_writer(
+                                self.width, self.height, self.parts_dir / f"video_{len(self.parts):05d}")
+                        next_frame_at += frame_interval
                     delay = max(0.0, next_frame_at - time.perf_counter())
                     self.stop_event.wait(delay)
         except Exception as exc:
@@ -351,6 +382,9 @@ class DesktopRecorder:
         finally:
             if self.writer is not None:
                 self.writer.release()
+                if chunk_frames:
+                    self.parts.append(self.chunk_path)
+                    save_parts(self.parts_dir, "video", self.parts, fps=self.fps)
 
     def stop(self) -> Path:
         self.stop_event.set()
@@ -374,7 +408,21 @@ class DesktopRecorder:
                 if self.language == "en"
                 else "画面を録画できませんでした。"
             )
-        return self.output_path
+        from recording_recovery import merge_video
+        return merge_video(self.parts, self.output_path, self.fps)
+
+
+def _bounded_driver_call(action, timeout=2.0):
+    """A stuck audio driver must not block the application's stop path forever."""
+    def run():
+        try:
+            action()
+        except Exception:
+            pass
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return not thread.is_alive()
 
 
 class SystemAudioRecorder:
@@ -382,8 +430,14 @@ class SystemAudioRecorder:
 
     chunk_size = 1024
 
-    def __init__(self, output_path: Path, language: str = "ja"):
+    def __init__(self, output_path: Path, language: str = "ja", segment_seconds=60, pause_event=None):
         self.output_path = output_path
+        self.segment_seconds = segment_seconds
+        self.pause_event = pause_event or threading.Event()
+        self.parts = []
+        self.parts_dir = output_path.parent / ".recording_parts"
+        self.current_level = 0.0
+        self.last_sound_at = time.monotonic()
         self.pa: Any = None
         self.stream: Any = None
         self.wave_file: Any = None
@@ -442,7 +496,10 @@ class SystemAudioRecorder:
                 input_device_index=device["index"],
                 frames_per_buffer=self.chunk_size,
             )
-            self.wave_file = wave.open(os.fspath(self.output_path), "wb")
+            self.rate, self.channels = rate, channels
+            self.parts_dir.mkdir(parents=True, exist_ok=True)
+            self.chunk_path = self.parts_dir / "audio_00000.wav"
+            self.wave_file = wave.open(os.fspath(self.chunk_path), "wb")
             self.wave_file.setnchannels(channels)
             self.wave_file.setsampwidth(2)
             self.wave_file.setframerate(rate)
@@ -459,42 +516,63 @@ class SystemAudioRecorder:
         return self.output_path
 
     def _worker(self) -> None:
+        from recording_recovery import save_parts
+        chunk_bytes = 0
         try:
             while not self.stop_event.is_set():
                 data = self.stream.read(self.chunk_size, exception_on_overflow=False)
+                if self.pause_event.is_set():
+                    self.current_level = 0.0
+                    continue
                 self.wave_file.writeframesraw(data)
                 self.bytes_written += len(data)
+                chunk_bytes += len(data)
                 samples = np.frombuffer(data, dtype=np.int16)
                 if samples.size:
                     peak = float(np.max(np.abs(samples.astype(np.int32)))) / 32768.0
                     self.peak_level = max(self.peak_level, peak)
+                    self.current_level = peak
+                    if peak >= 0.001:
+                        self.last_sound_at = time.monotonic()
+                if hasattr(self, "rate") and chunk_bytes >= self.segment_seconds * self.rate * self.channels * 2:
+                    self.wave_file.close()
+                    self.parts.append(self.chunk_path)
+                    chunk_bytes = 0
+                    save_parts(self.parts_dir, "audio", self.parts)
+                    self.chunk_path = self.parts_dir / f"audio_{len(self.parts):05d}.wav"
+                    self.wave_file = wave.open(os.fspath(self.chunk_path), "wb")
+                    self.wave_file.setnchannels(self.channels)
+                    self.wave_file.setsampwidth(2)
+                    self.wave_file.setframerate(self.rate)
+                    chunk_bytes = 0
         except Exception as exc:
             if not self.stop_event.is_set():
                 self.error = exc
+        finally:
+            if hasattr(self, "chunk_path") and self.wave_file is not None:
+                self.wave_file.close()
+                self.wave_file = None
+                if chunk_bytes:
+                    self.parts.append(self.chunk_path)
+                    save_parts(self.parts_dir, "audio", self.parts)
 
     def stop(self) -> bool:
         self.stop_event.set()
         # WASAPI の read() が待機中だと、先に join() しても録音スレッドは
         # 終了できない。まずストリームを停止して read() を解除してから待つ。
         if self.stream is not None:
-            try:
-                self.stream.stop_stream()
-            except Exception:
-                pass
+            _bounded_driver_call(self.stream.stop_stream)
         if self.thread is not None:
             self.thread.join(timeout=5)
         if self.thread is not None and self.thread.is_alive():
             # 一部の音声ドライバーは stop_stream() だけでは解除されないため、
             # ストリームを閉じてもう一度だけ終了を待つ。
             if self.stream is not None:
-                try:
-                    self.stream.close()
-                except Exception:
-                    pass
-                self.stream = None
+                _bounded_driver_call(self.stream.close)
             self.thread.join(timeout=2)
         if self.thread is not None and self.thread.is_alive():
-            self.close()
+            # Never close a WAV still owned by the blocked worker. Finalized chunks
+            # remain recoverable, even if the current chunk cannot be finalized.
             raise RuntimeError(
                 "Timed out while stopping PC-audio recording."
                 if self.language == "en"
@@ -507,17 +585,19 @@ class SystemAudioRecorder:
                 if self.language == "en"
                 else f"PC音声の録音中にエラーが発生しました: {self.error}"
             )
+        if self.parts:
+            from recording_recovery import merge_audio
+            merge_audio(self.parts, self.output_path)
         recorded = self.bytes_written > 0 and self.output_path.is_file()
         self.close()
         return recorded
 
     def close(self) -> None:
+        if self.thread is not None and self.thread.is_alive():
+            return
         if self.stream is not None:
-            try:
-                self.stream.stop_stream()
-                self.stream.close()
-            except Exception:
-                pass
+            _bounded_driver_call(self.stream.stop_stream)
+            _bounded_driver_call(self.stream.close)
             self.stream = None
         if self.wave_file is not None:
             try:
@@ -526,10 +606,7 @@ class SystemAudioRecorder:
                 pass
             self.wave_file = None
         if self.pa is not None:
-            try:
-                self.pa.terminate()
-            except Exception:
-                pass
+            _bounded_driver_call(self.pa.terminate)
             self.pa = None
 
 
@@ -553,7 +630,9 @@ def test_pc_audio(
 ) -> tuple[str, float]:
     """録画開始前にPC音声を短時間録音し、実際に音が入ることを確認する。"""
     english = language == "en"
-    test_recorder = SystemAudioRecorder(output_path, language=language)
+    # Preflight chunks must never overwrite the real recording's recovery manifest.
+    test_dir = Path(tempfile.mkdtemp(prefix="audio-test-", dir=output_path.parent))
+    test_recorder = SystemAudioRecorder(test_dir / output_path.name, language=language)
     try:
         test_recorder.start()
         time.sleep(duration_seconds)
@@ -570,10 +649,8 @@ def test_pc_audio(
         return test_recorder.device_name, peak_level
     finally:
         test_recorder.close()
-        try:
-            output_path.unlink()
-        except FileNotFoundError:
-            pass
+        if test_dir.resolve().parent == output_path.parent.resolve():
+            shutil.rmtree(test_dir)
 
 
 def _default_output_root() -> Path:
@@ -589,6 +666,8 @@ def record_and_analyze(
     monitor_index: int | None = None,
     capture_region: dict[str, int] | None = None,
     language: str = "ja",
+    control=None,
+    analysis_options=None,
 ) -> dict[str, Any]:
     english = language == "en"
     _require_recording_dependencies(language)
@@ -615,6 +694,9 @@ def record_and_analyze(
     else:
         video = DesktopRecorder(session_dir / "画面録画", fps=fps, capture_region=selected_region)
         audio = SystemAudioRecorder(session_dir / "PC音声.wav")
+    if control is not None:
+        video.pause_event = control.pause
+        audio.pause_event = control.pause
 
     print("=" * 64)
     print("  Screen Recording + High-Accuracy AI Analysis" if english else "  画面録画 + 高精度AI解析")
@@ -635,13 +717,14 @@ def record_and_analyze(
         print(f"  ・保存先: {session_dir}")
     print()
     try:
-        input(
-            "Start playing a video or music on the PC, then press Enter. "
-            "Recording will begin after a 3-second audio test..."
-            if english
-            else "PCで動画や音楽を再生した状態にして、"
-            "Enterキーを押してください（3秒間の音声テスト後に録画開始）..."
-        )
+        if control is None:
+            input(
+                "Start playing a video or music on the PC, then press Enter. "
+                "Recording will begin after a 3-second audio test..."
+                if english
+                else "PCで動画や音楽を再生した状態にして、"
+                "Enterキーを押してください（3秒間の音声テスト後に録画開始）..."
+            )
     except (KeyboardInterrupt, EOFError) as exc:
         raise RuntimeError("Recording was cancelled." if english else "録画をキャンセルしました。") from exc
 
@@ -665,6 +748,8 @@ def record_and_analyze(
 
     video_path: Path | None = None
     audio_ok = False
+    if control is not None:
+        control.checkpoint()
     video_path = video.start()
     try:
         audio.start()
@@ -701,11 +786,23 @@ def record_and_analyze(
             if english
             else "\n● 録画中です。停止するには Enter キーを押してください。"
         )
-        try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            pass
+        if control is None:
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+        else:
+            while not control.stop.wait(0.2):
+                if control.cancel.is_set():
+                    break
+                if video.error or audio.error:
+                    raise RuntimeError(f"Recording device error / 録画デバイス異常: {video.error or audio.error}")
+                control.emit(kind="recording", seconds=video.frames_written / fps,
+                             level=audio.current_level, paused=control.pause.is_set(),
+                             silent=not control.pause.is_set() and time.monotonic() - audio.last_sound_at > 15)
     finally:
+        if control is not None:
+            control.emit(kind="stage", stage="録画保存")
         try:
             audio_ok = audio.stop()
         except Exception as exc:
@@ -747,6 +844,13 @@ def record_and_analyze(
             if english
             else "高精度文字起こしに必要なPC音声を録音できませんでした。"
         )
+    # Both final media files exist; only app-owned recovery chunks can be removed.
+    parts_dir = (session_dir / ".recording_parts").resolve()
+    if parts_dir.parent == session_dir.resolve() and parts_dir.is_dir():
+        shutil.rmtree(parts_dir)
+    if control is not None:
+        control.emit(kind="saved_recording", video=os.fspath(video_path), audio=os.fspath(audio.output_path))
+        control.checkpoint()
     from gemini_hybrid_analyzer import analyze_with_gemini
 
     result = analyze_with_gemini(
@@ -755,6 +859,7 @@ def record_and_analyze(
         output_dir=analysis_dir,
         require_consent=True,
         language=language,
+        **(analysis_options or {}),
     )
     result.update({
         "recording_dir": os.fspath(session_dir),

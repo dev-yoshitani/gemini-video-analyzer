@@ -164,7 +164,7 @@ def is_near_duplicate(
             and metrics["edge"] <= 0.012
             and metrics["changed"] <= 0.08
         )
-        if same_content:
+        if same_content and duplicate_threshold > 0:
             return True
     return False
 
@@ -178,9 +178,23 @@ def deduplicate_image_candidates(
     unique_frames: list[dict[str, Any]] = []
     signatures: list[FrameSignature] = []
     removed = 0
+    exact_hashes = set()
 
     for frame_info in frames:
         image_path = Path(frame_info["path"])
+        if duplicate_threshold == 0:
+            import hashlib
+            try:
+                digest = hashlib.sha256(image_path.read_bytes()).digest()
+            except OSError:
+                unique_frames.append(frame_info)
+                continue
+            if digest in exact_hashes:
+                removed += 1
+            else:
+                exact_hashes.add(digest)
+                unique_frames.append(frame_info)
+            continue
         try:
             encoded = np.frombuffer(image_path.read_bytes(), dtype=np.uint8)
             image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
@@ -302,6 +316,8 @@ def extract_scenes(
 
     try:
         while capture.grab():
+            from workflow_control import checkpoint
+            checkpoint()
             frame_number += 1
             if frame_number % sample_step != 0:
                 continue

@@ -423,6 +423,7 @@ def compress_audio_for_upload(audio_filepath, language="ja"):
 # ============================================================
 
 import re
+import json
 
 # 除去対象のフィラーパターン（単独で出現する場合のみ除去）
 _FILLER_WORDS = [
@@ -553,7 +554,8 @@ Remove non-meaningful filler words such as "um", "uh", "erm", and repeated false
 # Gemini 文字起こし
 # ============================================================
 
-def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_callback=None):
+def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_callback=None,
+                           timestamps=False, duration_seconds=None):
     """Gemini APIで音声ファイルを文字起こしする"""
     from google import genai
     from gemini_retry import call_with_gemini_retry, is_retryable_gemini_error
@@ -679,6 +681,14 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         return None, None
 
     prompt = _build_transcription_prompt(language)
+    if timestamps:
+        prompt = (("Translate speech faithfully into English. " if english else "日本語で忠実に文字起こししてください。他言語の発言は意味を保って日本語に翻訳してください。 ")
+                  + "Return ONLY a JSON array of spoken segments, "
+                   'each {"start": 0.0, "end": 3.2, "text": "spoken words"}. '
+                   f"Times are seconds relative to this audio clip (duration {duration_seconds:.3f}s). "
+                   "Use short utterances, chronological order, start < end, and end <= duration. "
+                   "For an entirely silent clip return []. Do not invent speech. Preserve meaningful "
+                   "words, negation and numbers; remove only meaningless hesitation sounds.")
 
     # 文字起こし実行
     if progress_callback:
@@ -783,6 +793,15 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         return None, None
 
     full_text = full_text.strip()
+
+    if timestamps:
+        from timeline_analysis import validate_segments
+        try:
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", full_text, flags=re.IGNORECASE)
+            segments = validate_segments(json.loads(raw), duration_seconds)
+            return "\n".join(item["text"] for item in segments), segments
+        finally:
+            cleanup_uploaded_audio()
 
     # フィラー（つなぎ言葉）の後処理除去
     full_text = remove_fillers(full_text, language="en" if english else "ja")

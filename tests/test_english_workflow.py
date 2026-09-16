@@ -1,4 +1,5 @@
 import json
+import wave
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ class EnglishLauncherTests(unittest.TestCase):
     def test_start_en_forwards_to_the_common_launcher_in_english_mode(self):
         start_en = Path(__file__).resolve().parents[1] / "Start_EN.bat"
         text = start_en.read_text(encoding="ascii")
-        self.assertIn("launcher.py --language en %*", text)
+        self.assertIn("desktop_app.py --language en %*", text)
 
     def test_dragged_video_uses_english_workflow(self):
         with mock.patch.object(launcher, "_run_hybrid_video", return_value=7) as run:
@@ -91,7 +92,7 @@ class EnglishPromptTests(unittest.TestCase):
         self.assertNotRegex(report_text, r"[ぁ-んァ-ン一-龯]")
         self.assertIn("Open Folder", report_text)
 
-    def test_failed_frame_cleanup_uses_english_only_fallback(self):
+    def test_failed_frame_cleanup_preserves_original_for_resume(self):
         untranslated = {
             "items": [{
                 "index": 0,
@@ -122,12 +123,10 @@ class EnglishPromptTests(unittest.TestCase):
             }
         }]
 
-        result = extractor._normalize_english_analyses(frames, client)
-
-        self.assertNotRegex(
-            json.dumps(result, ensure_ascii=False),
-            r"[ぁ-んァ-ン一-龯]",
-        )
+        with self.assertRaisesRegex(RuntimeError, "translation is incomplete"):
+            extractor._normalize_english_analyses(frames, client)
+        self.assertEqual(frames[0]["analysis"]["summary"], "日本語の要約")
+        self.assertEqual(frames[0]["analysis"]["detected_text"], "ファイル")
 
 
 class EnglishPdfTests(unittest.TestCase):
@@ -268,7 +267,9 @@ class EnglishHybridWorkflowTests(unittest.TestCase):
             output = root / "result"
             audio = root / "PC Audio.wav"
             video.write_bytes(b"video")
-            audio.write_bytes(b"audio")
+            with wave.open(str(audio), "wb") as wav:
+                wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                wav.writeframes(b"\x01\x00" * 16000)
             captured_extract_kwargs = {}
 
             def fake_extract_scenes(*_args, **kwargs):
@@ -276,7 +277,7 @@ class EnglishHybridWorkflowTests(unittest.TestCase):
                 return [FakeScene()], {"duration_sec": 1.0}
 
             def fake_create_pdf(**kwargs):
-                Path(kwargs["output_filepath"]).write_bytes(b"PDF")
+                Path(kwargs["output_filepath"]).write_bytes(b"%PDF-1.4\n%%EOF\n")
                 return kwargs["output_filepath"]
 
             with (

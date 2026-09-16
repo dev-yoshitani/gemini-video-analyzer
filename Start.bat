@@ -2,19 +2,19 @@
 setlocal
 cd /d "%~dp0"
 
-if exist ".venv\Scripts\python.exe" goto VENV
-where py >nul 2>&1
+if exist ".venv\Scripts\pythonw.exe" goto VENV
+where pyw >nul 2>&1
 if not errorlevel 1 goto PYLAUNCHER
 goto SYSTEMPYTHON
 
 :VENV
-".venv\Scripts\python.exe" launcher.py %*
+start "" ".venv\Scripts\pythonw.exe" desktop_app.py %*
 exit /b %ERRORLEVEL%
 
 :PYLAUNCHER
-py -3 launcher.py %*
+start "" pyw -3 desktop_app.py %*
 exit /b %ERRORLEVEL%
 
 :SYSTEMPYTHON
-python launcher.py %*
+start "" pythonw desktop_app.py %*
 exit /b %ERRORLEVEL%

@@ -63,11 +63,14 @@ def wait_for_gemini_retry(
             f"{seconds}秒後に{description}を自動再試行します。"
         )
     remaining = seconds
+    from workflow_control import checkpoint, notify
+    notify(kind="waiting", seconds=seconds)
     while remaining > 0:
-        step = min(30, remaining)
+        checkpoint()
+        step = min(1, remaining)
         time.sleep(step)
         remaining -= step
-        if remaining > 0:
+        if remaining > 0 and (remaining % 30 == 0 or remaining <= 5):
             if language == "en":
                 print(f"  About {remaining} seconds until retry...")
             else:
@@ -83,6 +86,8 @@ def call_with_gemini_retry(
 ) -> T:
     """一時的エラーだけを段階的な待機時間で再試行する。"""
     for attempt in range(len(delays) + 1):
+        from workflow_control import checkpoint
+        checkpoint()
         try:
             return operation()
         except Exception as exc:

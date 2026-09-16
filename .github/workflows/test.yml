@@ -32,8 +32,8 @@ jobs:
 
       - name: Syntax Check
         run: |
-          python -m py_compile audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py
-          flake8 audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py tests --count --select=E9,F63,F7,F82 --show-source --statistics
+          python -m py_compile audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py desktop_app.py timeline_analysis.py recording_recovery.py workflow_control.py
+          flake8 audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py desktop_app.py timeline_analysis.py recording_recovery.py workflow_control.py tests --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: Unit Tests
         run: python -m unittest discover -s tests -v

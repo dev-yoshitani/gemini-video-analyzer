@@ -1,4 +1,5 @@
 import tempfile
+import wave
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,7 +45,9 @@ class HybridAnalyzerTests(unittest.TestCase):
             output.mkdir()
             # ユーザー指定音声が出力先の中にあっても、完了時に削除しない。
             audio = output / "user_audio.wav"
-            audio.write_bytes(b"mock audio")
+            with wave.open(str(audio), "wb") as wav:
+                wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                wav.writeframes(b"\x01\x00" * 16000)
 
             writer = cv2.VideoWriter(
                 str(video), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (320, 180)
@@ -115,7 +118,9 @@ class HybridAnalyzerTests(unittest.TestCase):
             audio = root / "audio.wav"
             output = root / "result"
             pending = root / "pending"
-            audio.write_bytes(b"mock audio")
+            with wave.open(str(audio), "wb") as wav:
+                wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                wav.writeframes(b"\x01\x00" * 16000)
 
             writer = cv2.VideoWriter(
                 str(video), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (320, 180)

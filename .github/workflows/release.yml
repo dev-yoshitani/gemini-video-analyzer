@@ -30,54 +30,30 @@ jobs:
 
       - name: Verify the application
         run: |
-          python -m py_compile audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py
-          flake8 audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py tests --count --select=E9,F63,F7,F82 --show-source --statistics
+          python -m py_compile audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py desktop_app.py timeline_analysis.py recording_recovery.py workflow_control.py
+          flake8 audio_transcriber.py key_slide_extractor.py local_video_analyzer.py local_screen_recorder.py gemini_hybrid_analyzer.py gemini_retry.py launcher.py desktop_app.py timeline_analysis.py recording_recovery.py workflow_control.py tests --count --select=E9,F63,F7,F82 --show-source --statistics
           python -m unittest discover -s tests -v
 
       - name: Prepare Japanese and English packages
-        shell: pwsh
-        run: |
-          $commonFiles = @(
-            'launcher.py',
-            'local_screen_recorder.py',
-            'local_video_analyzer.py',
-            'gemini_hybrid_analyzer.py',
-            'gemini_retry.py',
-            'audio_transcriber.py',
-            'key_slide_extractor.py',
-            'requirements.txt',
-            'requirements-local.txt',
-            'requirements-app.txt',
-            'README.md',
-            'LICENSE',
-            '.env.example'
-          )
-
-          New-Item -ItemType Directory -Force -Path release_japanese | Out-Null
-          Copy-Item -Path $commonFiles -Destination release_japanese
-          Copy-Item -Path @('Start.bat', 'manual.pdf') -Destination release_japanese
-          Compress-Archive -Path release_japanese\* -DestinationPath Gemini-Video-Analyzer-Windows-Japanese.zip
-
-          New-Item -ItemType Directory -Force -Path release_english | Out-Null
-          Copy-Item -Path $commonFiles -Destination release_english
-          Copy-Item -Path @('Start_EN.bat', 'manual_EN.pdf') -Destination release_english
-          Compress-Archive -Path release_english\* -DestinationPath Gemini-Video-Analyzer-Windows-English.zip
+        run: python tools/package_release.py --output dist
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
           name: Gemini-Video-Analyzer-Windows
           path: |
-            Gemini-Video-Analyzer-Windows-Japanese.zip
-            Gemini-Video-Analyzer-Windows-English.zip
+            dist/Gemini-Video-Analyzer-Windows-Japanese.zip
+            dist/Gemini-Video-Analyzer-Windows-English.zip
+            dist/SHA256SUMS.txt
           retention-days: 7
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            Gemini-Video-Analyzer-Windows-Japanese.zip
-            Gemini-Video-Analyzer-Windows-English.zip
+            dist/Gemini-Video-Analyzer-Windows-Japanese.zip
+            dist/Gemini-Video-Analyzer-Windows-English.zip
+            dist/SHA256SUMS.txt
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

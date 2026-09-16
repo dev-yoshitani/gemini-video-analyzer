@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import wave
 from pathlib import Path
 from typing import Any, Sequence
@@ -52,6 +53,34 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _publish_pdf(create_pdf, pdf_path: Path, **kwargs) -> None:
+    """Finish a PDF in a temporary file before replacing the final report."""
+    descriptor, name = tempfile.mkstemp(prefix=".report-", suffix=".pdf", dir=pdf_path.parent)
+    os.close(descriptor)
+    temporary = Path(name)
+    try:
+        generated = create_pdf(output_filepath=os.fspath(temporary), **kwargs)
+        if not generated or Path(generated).resolve() != temporary.resolve():
+            raise ValueError("PDF generation returned a different file type")
+        # Detect empty/truncated output without adding a runtime PDF-reader dependency.
+        with temporary.open("rb") as report:
+            header = report.read(5)
+            report.seek(max(0, temporary.stat().st_size - 1024))
+            trailer = report.read()
+        if header != b"%PDF-" or not trailer.rstrip().endswith(b"%%EOF"):
+            raise ValueError("PDF output is missing its header or completion marker")
+        os.replace(temporary, pdf_path)
+    except Exception as exc:
+        raise RuntimeError(
+            "The PDF could not be completed. Analysis data was retained; resume to retry."
+            if kwargs.get("language") == "en"
+            else "PDFを正常に保存できませんでした。解析データを保持しました。途中から再開してください。"
+        ) from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+        temporary.with_suffix(".txt").unlink(missing_ok=True)
 
 
 def _cleanup_completed_analysis(
@@ -173,6 +202,9 @@ def _set_stage(
     artifact: str | os.PathLike[str] | None = None,
 ) -> None:
     state["current_stage"] = stage
+    from workflow_control import checkpoint, notify
+    checkpoint()
+    notify(kind="stage", stage=stage)
     state["status"] = "in_progress"
     if completed and stage not in state["completed_stages"]:
         state["completed_stages"].append(stage)
@@ -232,6 +264,9 @@ def _show_cloud_consent_dialog(language: str) -> bool | None:
 
 
 def _ask_cloud_consent(language: str = "ja") -> bool:
+    import workflow_control
+    if workflow_control.active is not None:
+        return workflow_control.active.confirm(language=language)
     english = language == "en"
     print("\n" + "=" * 64)
     print("  High-Accuracy AI Analysis (Gemini)" if english else "  高精度AI解析モード（Gemini）")
@@ -309,6 +344,8 @@ def extract_audio_locally(video_path: Path, output_path: Path, language: str = "
             destination.setsampwidth(2)
             destination.setframerate(16000)
             for frame in container.decode(stream):
+                from workflow_control import checkpoint
+                checkpoint()
                 for converted in resampler.resample(frame):
                     data = converted.to_ndarray().tobytes()
                     destination.writeframesraw(data)
@@ -326,12 +363,8 @@ def extract_audio_locally(video_path: Path, output_path: Path, language: str = "
 
 
 def _limit_candidates(scenes: Sequence[Any], maximum: int) -> list[Any]:
-    if len(scenes) <= maximum:
-        return list(scenes)
-    first = scenes[0]
-    ranked = sorted(scenes[1:], key=lambda scene: scene.change_score, reverse=True)
-    selected = [first, *ranked[:maximum - 1]]
-    return sorted(selected, key=lambda scene: scene.timestamp_sec)
+    from timeline_analysis import balanced_candidates
+    return balanced_candidates(scenes, maximum)
 
 
 def _frames_from_scenes(scenes: Sequence[Any], output_dir: Path) -> list[dict[str, Any]]:
@@ -382,7 +415,10 @@ def analyze_with_gemini(
     max_candidates: int = 30,
     max_key_slides: int = 20,
     language: str = "ja",
+    max_audio_minutes: int = 120,
 ) -> dict[str, Any]:
+    from timeline_analysis import transcribe_chunks
+    from workflow_control import checkpoint, notify
     from audio_transcriber import (
         GEMINI_MODEL,
         create_pdf,
@@ -394,6 +430,8 @@ def analyze_with_gemini(
 
     language = "en" if language == "en" else "ja"
     english = language == "en"
+    if not 1 <= max_candidates <= 300 or not 1 <= max_audio_minutes <= 1440:
+        raise ValueError("Invalid analysis limits / 解析量の上限が不正です")
     source = Path(video_path).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"Video not found: {source}" if english else f"動画が見つかりません: {source}")
@@ -426,6 +464,8 @@ def analyze_with_gemini(
         if state.get("status") == "complete":
             raise RuntimeError("This analysis has already completed." if english else "この解析はすでに完了しています。")
         _validate_source_identity(source, state["source"], language)
+        state["options"].update(max_candidates=max_candidates, max_key_slides=max_key_slides,
+                                max_audio_minutes=max_audio_minutes)
         print(
             "\nFound an unfinished analysis. Reusing completed work and continuing."
             if english
@@ -446,6 +486,7 @@ def analyze_with_gemini(
                 "max_candidates": max_candidates,
                 "max_key_slides": max_key_slides,
                 "language": language,
+                "max_audio_minutes": max_audio_minutes,
             },
             "current_stage": "準備中",
             "completed_stages": [],
@@ -455,6 +496,7 @@ def analyze_with_gemini(
         _register_pending_job(state_path, state)
 
     try:
+        checkpoint()
         api_key = _get_api_key(language)
 
         candidates_path = _artifact_for(state, "シーン候補抽出")
@@ -476,7 +518,13 @@ def analyze_with_gemini(
                     "filename": image_path.name,
                     "timestamp_sec": scene["timestamp_sec"],
                     "timestamp_str": scene["timestamp"],
+                    "speech_anchor": scene.get("speech_anchor", False),
                 })
+            if len(frames) > max_candidates:
+                from types import SimpleNamespace
+                ranked = [SimpleNamespace(timestamp_sec=frame["timestamp_sec"], change_score=1,
+                                          frame=frame) for frame in frames]
+                frames = [item.frame for item in _limit_candidates(ranked, max_candidates)]
         else:
             _set_stage(state_path, state, "シーン候補抽出")
             print("\n[1/5] Extracting scene candidates locally..." if english else "\n[1/5] PC内でシーン候補を抽出中...")
@@ -485,11 +533,11 @@ def analyze_with_gemini(
                 destination / ("Extracted Scenes" if english else "抽出シーン"),
                 scan_fps=4.0,
                 scene_threshold=0.16,
-                duplicate_threshold=0.08,
+                duplicate_threshold=0.0,
                 min_scene_duration=0.6,
                 language=language,
             )
-            scenes = _limit_candidates(scenes, max_candidates)
+            scenes = _limit_candidates(scenes, max_candidates - min(10, max_candidates // 3))
             frames = _frames_from_scenes(scenes, destination)
             candidates_path = destination / ("Scene_Candidates.json" if english else "シーン候補一覧.json")
             _write_json_atomic(candidates_path, {
@@ -503,10 +551,11 @@ def analyze_with_gemini(
                 completed=True,
                 artifact=candidates_path,
             )
-        frames, similar_content_removed = deduplicate_image_candidates(
-            frames,
-            duplicate_threshold=0.08,
-        )
+        # Exact-duplicate-only prefilter: tiny numeric changes must reach the model.
+        if any(frame.get("speech_anchor") for frame in frames):
+            similar_content_removed = 0
+        else:
+            frames, similar_content_removed = deduplicate_image_candidates(frames, duplicate_threshold=0.0)
         if similar_content_removed:
             if english:
                 print(f"  Removed {similar_content_removed} visually similar candidates locally.")
@@ -525,6 +574,10 @@ def analyze_with_gemini(
         generated_prepared_audio: Path | None = None
         prepared_audio = _artifact_for(state, "音声準備")
         if prepared_audio is not None and "音声準備" in state["completed_stages"]:
+            if state.get("audio_identity"):
+                current = _source_identity(prepared_audio)
+                if current != state["audio_identity"]:
+                    raise RuntimeError("録音音声が変更されています。新規解析してください / Recorded audio changed; start a new analysis")
             print("\n[2/5] Reusing saved audio." if english else "\n[2/5] 保存済みの音声を再利用します。")
             if (
                 provided_audio is None
@@ -551,6 +604,7 @@ def analyze_with_gemini(
                     language=language,
                 )
                 generated_prepared_audio = prepared_audio
+            state["audio_identity"] = _source_identity(prepared_audio)
             _set_stage(
                 state_path,
                 state,
@@ -559,21 +613,34 @@ def analyze_with_gemini(
                 artifact=prepared_audio,
             )
 
+        checkpoint()
+        with wave.open(os.fspath(prepared_audio), "rb") as audio_info:
+            audio_duration = audio_info.getnframes() / audio_info.getframerate()
+        if audio_duration > max_audio_minutes * 60:
+            raise ValueError("音声時間が設定した上限を超えています / Audio exceeds the configured limit")
+        notify(kind="plan", images=len(frames), audio_minutes=round(audio_duration / 60, 2))
+        timeline_path = destination / "Transcript_Timeline.json"
+        chunks_dir = destination / "Transcript_Chunks"
+        timeline = []
         transcript_path = _artifact_for(state, "文字起こし")
         if transcript_path is not None and "文字起こし" in state["completed_stages"]:
             print("\n[3/5] Reusing saved transcript." if english else "\n[3/5] 保存済みの文字起こしを再利用します。")
             transcript = transcript_path.read_text(encoding="utf-8").strip()
+            if timeline_path.exists():
+                timeline = _read_json(timeline_path)
         else:
             _set_stage(state_path, state, "文字起こし")
             print("\n[3/5] Creating a high-accuracy English transcript with Gemini..." if english else "\n[3/5] Geminiで高精度文字起こし中...")
-            transcript, _ = transcribe_with_gemini(
-                os.fspath(prepared_audio), api_key, language=language
+            transcript, timeline = transcribe_chunks(
+                prepared_audio, api_key, chunks_dir, transcribe_with_gemini,
+                language=language, max_audio_minutes=max_audio_minutes,
             )
             transcript = (transcript or "").strip()
             if not transcript:
                 raise RuntimeError("Gemini returned an empty transcript." if english else "Geminiの文字起こし結果が空でした。")
             transcript_path = destination / ("Transcript.txt" if english else "文字起こし.txt")
             transcript_path.write_text(transcript + "\n", encoding="utf-8")
+            _write_json_atomic(timeline_path, timeline)
             _set_stage(
                 state_path,
                 state,
@@ -582,6 +649,14 @@ def analyze_with_gemini(
                 artifact=transcript_path,
             )
 
+        from timeline_analysis import add_speech_candidates
+        if timeline:
+            frames = add_speech_candidates(source, frames, timeline, max_candidates,
+                                          destination / ("Extracted Scenes" if english else "抽出シーン"))
+            _write_json_atomic(candidates_path, {"video": video_metadata, "scenes": [
+                {"image": os.fspath(Path(frame["path"]).relative_to(destination)),
+                 "timestamp_sec": frame["timestamp_sec"], "timestamp": frame["timestamp_str"],
+                 "speech_anchor": frame.get("speech_anchor", False)} for frame in frames]})
         print(
             "\n[4/5] Analyzing candidate-image importance and content with Gemini..."
             if english
@@ -595,6 +670,7 @@ def analyze_with_gemini(
             output_dir=os.fspath(destination),
             language=language,
         )
+        extractor.transcript_segments = timeline
         frame_analysis_path = _artifact_for(
             state, "画像解析", must_exist=False
         ) or (destination / ("Frame_Analysis_Progress.json" if english else "画像解析の途中結果.json"))
@@ -615,26 +691,23 @@ def analyze_with_gemini(
                 artifact=frame_analysis_path,
             )
 
-        if "画像解析" in state["completed_stages"] and all(
-            frame.get("analysis") for frame in frames
-        ):
-            print("  Reusing saved frame-analysis results." if english else "  保存済みの画像解析結果を再利用します。")
-        else:
-            _set_stage(state_path, state, "画像解析", artifact=frame_analysis_path)
-            frames = extractor.analyze_all_frames(
-                frames,
-                transcript_text=transcript,
-                progress_callback=save_frame_progress,
-                skip_analyzed=True,
-            )
-            _write_json_atomic(frame_analysis_path, frames)
-            _set_stage(
-                state_path,
-                state,
-                "画像解析",
-                completed=True,
-                artifact=frame_analysis_path,
-            )
+        # Always validate cached results, including jobs saved by earlier versions.
+        # The extractor reuses valid frames and retries failed analysis/translation only.
+        _set_stage(state_path, state, "画像解析", artifact=frame_analysis_path)
+        frames = extractor.analyze_all_frames(
+            frames,
+            transcript_text=transcript,
+            progress_callback=save_frame_progress,
+            skip_analyzed=True,
+        )
+        _write_json_atomic(frame_analysis_path, frames)
+        _set_stage(
+            state_path,
+            state,
+            "画像解析",
+            completed=True,
+            artifact=frame_analysis_path,
+        )
 
         frames = extractor.deduplicate_frames(frames)
         key_slides = extractor.select_key_slides(frames)
@@ -658,10 +731,11 @@ def analyze_with_gemini(
         pdf_path = destination / (
             f"{title}_Analysis_Report.pdf" if english else f"{title}_解析レポート.pdf"
         )
-        create_pdf(
+        _publish_pdf(
+            create_pdf,
+            pdf_path,
             full_text=transcript,
             timestamped_text="",
-            output_filepath=os.fspath(pdf_path),
             audio_filename=_pdf_source_name(source, language),
             key_slides=key_slides,
             document_title=title,
@@ -701,6 +775,8 @@ def analyze_with_gemini(
             generated_prepared_audio,
             transcript_path,
             frame_analysis_path,
+            timeline_path,
+            chunks_dir,
             language=language,
         )
         print("\n" + "=" * 64)
@@ -738,6 +814,8 @@ def resume_analysis(
     *,
     require_consent: bool = True,
     language: str = "ja",
+    max_candidates: int | None = None,
+    max_audio_minutes: int | None = None,
 ) -> dict[str, Any]:
     english = language == "en"
     path = Path(state_path).expanduser().resolve()
@@ -759,9 +837,10 @@ def resume_analysis(
         audio_path=state.get("audio_path"),
         output_dir=path.parent,
         require_consent=require_consent,
-        max_candidates=int(options.get("max_candidates", 30)),
+        max_candidates=max_candidates if max_candidates is not None else int(options.get("max_candidates", 30)),
         max_key_slides=int(options.get("max_key_slides", 20)),
         language=language,
+        max_audio_minutes=max_audio_minutes if max_audio_minutes is not None else int(options.get("max_audio_minutes", 120)),
     )
 
 

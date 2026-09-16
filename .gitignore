@@ -74,6 +74,8 @@ pet-runs/
 # Local environment variables and keys
 .env
 .env.local
+.app_settings.json
+.app_settings.json.tmp
 .env.*.local
 *.key
 

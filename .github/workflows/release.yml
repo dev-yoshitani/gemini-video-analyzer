@@ -17,6 +17,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Ensure release does not already exist (Release immutability check)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "::error::Release '${{ github.ref_name }}' already exists. Overwriting an existing release or mutating tags is strictly prohibited."
+            echo "::error::Please bump the patch version (e.g. v2.3.1) and push a new tag."
+            exit 1
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

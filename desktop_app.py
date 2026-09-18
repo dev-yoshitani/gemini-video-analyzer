@@ -98,8 +98,18 @@ def run_worker():
             from recording_recovery import recover_recording
             media = recover_recording(job["path"])
             emit(kind="saved_recording", **{k: str(v) for k, v in media.items()})
-            result = analyze_with_gemini(media["video"], audio_path=media["audio"],
-                                         language=language, **options)
+            if "video" in media:
+                result = analyze_with_gemini(media["video"], audio_path=media.get("audio"),
+                                             language=language, **options)
+            else:
+                from audio_compression import prepare_storage_audio
+                saved_audio = prepare_storage_audio(media["audio"], delete_source_on_success=True)
+                result = {
+                    "success": True,
+                    "audio": str(saved_audio),
+                    "mode": "audio_only",
+                    "recording_dir": str(job["path"]),
+                }
         else:
             from launcher import _find_sidecar_audio
             result = analyze_with_gemini(job["path"], audio_path=_find_sidecar_audio(job["path"]),
@@ -203,6 +213,60 @@ class DesktopApp:
         if path:
             self.start("analyze", path)
 
+    def show_ffmpeg_guide(self, parent=None):
+        from tkinter import messagebox
+        window = self.tk.Toplevel(parent or self.root)
+        window.title(self.tr("FFmpegの導入案内", "FFmpeg Setup Guide"))
+        window.transient(parent or self.root)
+        window.grab_set()
+        window.resizable(False, False)
+
+        ttk = self.ttk
+        frame = ttk.Frame(window, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text=self.tr("FFmpegを導入すると、音声を約1/48（Opus/M4A）に超軽量化できます。\n（未導入でも16 kHz WAVで正常に録音・文字起こし可能です）",
+                         "Installing FFmpeg enables ultra-lightweight Opus/M4A compression (~1/48 size).\n(Without FFmpeg, 16 kHz WAV fallback works automatically.)"),
+            font=("Yu Gothic UI", 10),
+            justify="left",
+        ).pack(anchor="w", pady=(0, 14))
+
+        # WinGet command
+        ttk.Label(frame, text=self.tr("方法1: PowerShellでコマンドを実行（推奨）:", "Method 1: Run in PowerShell (Recommended):"),
+                  font=("Yu Gothic UI", 9, "bold")).pack(anchor="w")
+        cmd_frame = ttk.Frame(frame)
+        cmd_frame.pack(fill="x", pady=(4, 12))
+        cmd_text = "winget install Gyan.FFmpeg"
+        entry = ttk.Entry(cmd_frame, width=32)
+        entry.insert(0, cmd_text)
+        entry.configure(state="readonly")
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        def copy_cmd():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(cmd_text)
+            messagebox.showinfo("FFmpeg", self.tr("コマンドをコピーしました。", "Command copied to clipboard."), parent=window)
+        ttk.Button(cmd_frame, text=self.tr("コピー", "Copy"), command=copy_cmd).pack(side="left")
+
+        # Method 2: Portable placement
+        app_bin = Path(__file__).resolve().parent / "bin"
+        ttk.Label(frame, text=self.tr("方法2: 下記フォルダに ffmpeg.exe を配置:",
+                                      "Method 2: Place ffmpeg.exe in the app folder:"),
+                  font=("Yu Gothic UI", 9, "bold")).pack(anchor="w")
+        bin_frame = ttk.Frame(frame)
+        bin_frame.pack(fill="x", pady=(4, 14))
+        path_entry = ttk.Entry(bin_frame, width=32)
+        path_entry.insert(0, str(app_bin))
+        path_entry.configure(state="readonly")
+        path_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        def open_bin():
+            app_bin.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(app_bin))
+        ttk.Button(bin_frame, text=self.tr("フォルダを開く", "Open Folder"), command=open_bin).pack(side="left")
+
+        ttk.Button(frame, text=self.tr("閉じる", "Close"), command=window.destroy).pack(anchor="e", pady=(8, 0))
+
     def record_audio_prompt(self):
         if self.busy():
             return
@@ -241,7 +305,22 @@ class DesktopApp:
         )
         btn2.pack(fill="x", pady=6)
 
-        ttk.Button(frame, text=self.tr("キャンセル", "Cancel"), command=window.destroy).pack(anchor="e", pady=(14, 0))
+        from audio_compression import get_compression_status
+        status = get_compression_status(self.language)
+        status_frame = ttk.Frame(frame)
+        status_frame.pack(fill="x", pady=(10, 4))
+        if status["has_ffmpeg"]:
+            status_text = self.tr("✔ 音声圧縮: Opus 32k / M4A 48k (FFmpeg有効・超軽量)",
+                                  "✔ Audio compression: Opus 32k / M4A 48k (FFmpeg active)")
+            ttk.Label(status_frame, text=status_text, foreground="#166534", font=("Yu Gothic UI", 9)).pack(side="left")
+        else:
+            status_text = self.tr("⚠️ 音声圧縮: 16 kHz WAV (FFmpeg未検出)",
+                                  "⚠️ Audio: 16 kHz WAV fallback (No FFmpeg)")
+            ttk.Label(status_frame, text=status_text, foreground="#92400e", font=("Yu Gothic UI", 9)).pack(side="left")
+            ttk.Button(status_frame, text=self.tr("導入案内", "Setup Guide"),
+                       command=lambda: self.show_ffmpeg_guide(window)).pack(side="right")
+
+        ttk.Button(frame, text=self.tr("キャンセル", "Cancel"), command=window.destroy).pack(anchor="e", pady=(10, 0))
 
     def record(self):
         from tkinter import messagebox, simpledialog
@@ -428,8 +507,16 @@ class DesktopApp:
         from gemini_hybrid_analyzer import list_pending_analyses
         self.jobs = [("resume", job["state_path"], Path(job["source"]).name) for job in list_pending_analyses()]
         root = Path(self.settings["output_root"])
+        recovered_folders = set()
         for manifest in root.glob("*/.recording_parts/video_parts.json"):
-            self.jobs.append(("recover", str(manifest.parent.parent), self.tr("録画を復旧: ", "Recover: ") + manifest.parent.parent.name))
+            folder = manifest.parent.parent
+            recovered_folders.add(folder.resolve())
+            self.jobs.append(("recover", str(folder), self.tr("録画を復旧: ", "Recover recording: ") + folder.name))
+        for manifest in root.glob("*/.recording_parts/audio_parts.json"):
+            folder = manifest.parent.parent
+            if folder.resolve() not in recovered_folders:
+                recovered_folders.add(folder.resolve())
+                self.jobs.append(("recover", str(folder), self.tr("録音を復旧: ", "Recover audio: ") + folder.name))
         self.pending.delete(0, "end")
         for _, _, label in self.jobs:
             self.pending.insert("end", label)
@@ -473,7 +560,22 @@ class DesktopApp:
             if selected:
                 fields["output_root"].set(selected)
         ttk.Button(window, text=self.tr("フォルダ選択", "Browse folder"), command=folder).grid(row=1, column=2)
-        ttk.Label(window, text=self.tr("上限は送信量の制御です。料金の上限保証ではありません。", "Limits control payload volume, not the final API bill.")).grid(row=4, columnspan=3, padx=12, pady=8)
+        from audio_compression import get_compression_status
+        status = get_compression_status(self.settings["language"])
+        row_status = ttk.Frame(window)
+        row_status.grid(row=4, columnspan=3, sticky="w", padx=12, pady=4)
+        if status["has_ffmpeg"]:
+            txt = self.tr(f"音声圧縮: {status['mode_description']} ({status['engine']})",
+                          f"Audio compression: {status['mode_description']} ({status['engine']})")
+            ttk.Label(row_status, text=txt, foreground="#166534").pack(side="left")
+        else:
+            txt = self.tr("音声圧縮: 16 kHz WAVフォールバック (FFmpeg未検出)",
+                          "Audio compression: 16 kHz WAV fallback (No FFmpeg)")
+            ttk.Label(row_status, text=txt, foreground="#92400e").pack(side="left")
+            ttk.Button(row_status, text=self.tr("FFmpeg導入案内", "FFmpeg Setup"),
+                       command=lambda: self.show_ffmpeg_guide(window)).pack(side="left", padx=8)
+
+        ttk.Label(window, text=self.tr("上限は送信量の制御です。料金の上限保証ではありません。", "Limits control payload volume, not the final API bill.")).grid(row=5, columnspan=3, padx=12, pady=8)
         def save():
             try:
                 self.settings = validate_settings({**self.settings, **{key: var.get() for key, var in fields.items()}})
@@ -484,7 +586,7 @@ class DesktopApp:
                 self.refresh_pending()
             except (ValueError, OSError) as exc:
                 messagebox.showerror("Settings", str(exc), parent=window)
-        ttk.Button(window, text=self.tr("保存", "Save"), command=save).grid(row=5, column=1, pady=14)
+        ttk.Button(window, text=self.tr("保存", "Save"), command=save).grid(row=6, column=1, pady=14)
 
     def close(self):
         from tkinter import messagebox

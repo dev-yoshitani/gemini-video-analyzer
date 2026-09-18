@@ -193,36 +193,75 @@ class AudioTranscriptionTests(unittest.TestCase):
 
 class DesktopAppAudioModeTests(unittest.TestCase):
     def test_start_record_audio_bypasses_api_key_prompt(self):
-        import tkinter as tk
+        dummy_app = mock.Mock()
+        dummy_app.busy.return_value = False
+        dummy_app.api_key = ""
+        dummy_app.settings = desktop_app.DEFAULTS
+        dummy_app.status = mock.Mock()
+        dummy_app.events = mock.Mock()
+        dummy_app.tr = lambda ja, en: ja
 
-        try:
-            root = tk.Tk()
-        except tk.TclError:
-            self.skipTest("Tkinter display not available")
+        with (
+            mock.patch.dict(os.environ, {"GEMINI_API_KEY": ""}, clear=True),
+            mock.patch("tkinter.simpledialog.askstring") as mock_ask,
+            mock.patch("subprocess.Popen") as mock_popen,
+            mock.patch("threading.Thread"),
+        ):
+            mock_proc = mock.Mock()
+            mock_proc.stdin = mock.Mock()
+            mock_proc.stdout = []
+            mock_popen.return_value = mock_proc
 
-        try:
-            root.withdraw()
-            with mock.patch.object(desktop_app.DesktopApp, "poll"), mock.patch("threading.Thread"):
-                app = desktop_app.DesktopApp(root, language="ja")
+            desktop_app.DesktopApp.start(dummy_app, "record_audio")
 
-                with (
-                    mock.patch.dict(os.environ, {"GEMINI_API_KEY": ""}, clear=True),
-                    mock.patch("tkinter.simpledialog.askstring") as mock_ask,
-                    mock.patch("subprocess.Popen") as mock_popen,
-                ):
-                    mock_proc = mock.Mock()
-                    mock_proc.poll.return_value = None
-                    mock_proc.stdin = mock.Mock()
-                    mock_proc.stdout = []
-                    mock_popen.return_value = mock_proc
+            # API key dialog MUST NOT be called in record_audio mode!
+            mock_ask.assert_not_called()
+            self.assertEqual(dummy_app.current_mode, "record_audio")
+            self.assertTrue(dummy_app.recording)
+            mock_popen.assert_called_once()
 
-                    app.start("record_audio")
+    def test_recover_recording_audio_only(self):
+        from recording_recovery import recover_recording, save_parts
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
+            recording_dir = Path(temp_dir) / "録音_2026-09-18_crash"
+            parts_dir = recording_dir / ".recording_parts"
+            parts_dir.mkdir(parents=True, exist_ok=True)
 
-                    # API key dialog MUST NOT be called in record_audio mode!
-                    mock_ask.assert_not_called()
-                    self.assertEqual(app.current_mode, "record_audio")
-                    self.assertTrue(app.recording)
+            # Create two 2.5-second audio chunks
+            chunk1 = _create_dummy_wav(parts_dir / "audio_00000.wav", duration_sec=2.5)
+            chunk2 = _create_dummy_wav(parts_dir / "audio_00001.wav", duration_sec=2.5)
+            save_parts(parts_dir, "audio", [chunk1, chunk2])
 
-                    mock_popen.assert_called_once()
-        finally:
-            root.destroy()
+            # Ensure video_parts.json does NOT exist
+            self.assertFalse((parts_dir / "video_parts.json").exists())
+
+            # Recover audio
+            recovered = recover_recording(recording_dir)
+            self.assertIn("audio", recovered)
+            self.assertNotIn("video", recovered)
+
+            recovered_wav = recovered["audio"]
+            self.assertTrue(recovered_wav.is_file())
+            from audio_compression import get_wav_duration_and_params
+            info = get_wav_duration_and_params(recovered_wav)
+            self.assertIsNotNone(info)
+            self.assertAlmostEqual(info["duration"], 5.0, delta=0.2)
+
+    def test_refresh_pending_detects_audio_recovery(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
+            audio_crash = Path(temp_dir) / "録音_2026-09-18_120000"
+            parts_dir = audio_crash / ".recording_parts"
+            parts_dir.mkdir(parents=True, exist_ok=True)
+            (parts_dir / "audio_parts.json").write_text('{"parts": []}', encoding="utf-8")
+
+            dummy_app = mock.Mock()
+            dummy_app.settings = {"output_root": temp_dir}
+            dummy_app.jobs = []
+            dummy_app.pending = mock.Mock()
+            dummy_app.tr = lambda ja, en: ja
+
+            with mock.patch("gemini_hybrid_analyzer.list_pending_analyses", return_value=[]):
+                desktop_app.DesktopApp.refresh_pending(dummy_app)
+
+            self.assertTrue(any("録音を復旧" in job[2] for job in dummy_app.jobs))
+

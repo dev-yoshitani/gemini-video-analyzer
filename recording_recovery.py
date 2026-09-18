@@ -102,20 +102,29 @@ def recover_recording(folder):
     folder = Path(folder).resolve()
     parts_dir = folder / ".recording_parts"
     result = {}
+    has_any = False
     for kind in ("audio", "video"):
         manifest = parts_dir / f"{kind}_parts.json"
+        if not manifest.is_file():
+            continue
         data = json.loads(manifest.read_text(encoding="utf-8"))
         parts = []
-        for name in data["parts"]:
+        for name in data.get("parts", []):
             if Path(name).name != name:
                 raise ValueError("Invalid recording chunk path")
             part = (parts_dir / name).resolve()
             if part.parent != parts_dir.resolve():
                 raise ValueError("Invalid recording chunk path")
-            parts.append(part)
+            if part.is_file():
+                parts.append(part)
+        if not parts:
+            continue
+        has_any = True
         # Never overwrite a user's existing complete recording during recovery.
         import uuid
         stem = f"Recovered_{kind}_{uuid.uuid4().hex[:8]}"
         result[kind] = (merge_audio(parts, folder / f"{stem}.wav") if kind == "audio"
-                        else merge_video(parts, folder / f"{stem}.mp4", data["fps"]))
+                        else merge_video(parts, folder / f"{stem}.mp4", data.get("fps", 4)))
+    if not has_any:
+        raise FileNotFoundError(f"No valid recording parts manifest found in {parts_dir}")
     return result

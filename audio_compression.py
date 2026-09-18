@@ -22,12 +22,31 @@ except ImportError:
 
 
 def find_ffmpeg() -> str | None:
-    """Find ffmpeg executable from PATH, WinGet, or Chocolatey."""
+    """Find ffmpeg executable from env, app local folder, PATH, WinGet, Scoop, or Chocolatey."""
+    # 1. Check explicit environment variables
+    for env_var in ("FFMPEG_PATH", "FFMPEG_BINARY"):
+        val = os.environ.get(env_var, "").strip()
+        if val and Path(val).is_file():
+            return val
+
+    # 2. Check local app directory (portable placement)
+    app_dir = Path(__file__).resolve().parent
+    local_candidates = [
+        app_dir / "bin" / "ffmpeg.exe",
+        app_dir / "tools" / "ffmpeg.exe",
+        app_dir / "ffmpeg.exe",
+        app_dir / "ffmpeg" / "bin" / "ffmpeg.exe",
+    ]
+    for candidate in local_candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    # 3. Check system PATH
     found = shutil.which("ffmpeg")
     if found:
         return found
 
-    # Check Windows-specific install locations
+    # 4. Check Windows-specific package managers and locations
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if local_app_data:
         winget_pattern = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
@@ -36,16 +55,49 @@ def find_ffmpeg() -> str | None:
                 if exe.is_file():
                     return str(exe)
 
+    user_profile = os.environ.get("USERPROFILE", "")
+    if user_profile:
+        scoop_candidates = [
+            Path(user_profile) / "scoop" / "shims" / "ffmpeg.exe",
+            Path(user_profile) / "scoop" / "apps" / "ffmpeg" / "current" / "bin" / "ffmpeg.exe",
+        ]
+        for candidate in scoop_candidates:
+            if candidate.is_file():
+                return str(candidate)
+
     choco_path = Path(r"C:\ProgramData\chocolatey\bin\ffmpeg.exe")
     if choco_path.is_file():
         return str(choco_path)
 
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
-    for pattern in [Path(program_files) / "ffmpeg" / "bin" / "ffmpeg.exe"]:
-        if pattern.is_file():
-            return str(pattern)
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    for base in (program_files, program_files_x86):
+        if not base:
+            continue
+        for candidate in [Path(base) / "ffmpeg" / "bin" / "ffmpeg.exe", Path(base) / "ffmpeg" / "ffmpeg.exe"]:
+            if candidate.is_file():
+                return str(candidate)
 
     return None
+
+
+def get_compression_status(language: str = "ja") -> dict[str, Any]:
+    """Return status of audio compression support (FFmpeg presence and active mode)."""
+    ffmpeg = find_ffmpeg()
+    has_ffmpeg = ffmpeg is not None
+    is_en = language == "en"
+    if has_ffmpeg:
+        desc = "Opus 32 kbps / M4A 48 kbps" if is_en else "Opus 32 kbps / M4A 48 kbps（超軽量）"
+        engine = f"FFmpeg ({Path(ffmpeg).name})"
+    else:
+        desc = "16 kHz mono WAV (Fallback)" if is_en else "16 kHz mono WAV（フォールバック）"
+        engine = "NumPy / wave"
+    return {
+        "has_ffmpeg": has_ffmpeg,
+        "ffmpeg_path": ffmpeg,
+        "mode_description": desc,
+        "engine": engine,
+    }
 
 
 def get_wav_duration_and_params(path: Path) -> dict[str, Any] | None:

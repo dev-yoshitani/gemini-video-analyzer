@@ -3,12 +3,14 @@
 ## 日本語
 
 1. 初回は従来どおり `pip install -r requirements-app.txt` を実行します。Tkを含む通常のWindows版Pythonが必要です。
-2. `Start.bat` を開きます。録画する場合はPCで音声を再生してから「録画する」を押し、画面範囲を選びます。
-3. 「一時停止／再開」は画面と音声を一緒に停止・再開します。一時停止中の内容は記録されません。
-4. 「録画を終了して解析」を押します。音声・候補画像のクラウド送信を確認してから解析します。「いいえ」の場合、録画はPCに残ります。
-5. 「結果を見る」でPDFを開きます。画像を含まない従来のPDF構成は変更していません。
+2. `Start.bat` を開きます。
+   - 「● 録画する」: 画面範囲を選び、画面とPC音声を録画して解析（議事録PDF）します。
+   - 「🎙 録音する」: 画面を録画せずPC音声のみを扱います。「録音だけ保存（API不要・完全ローカル）」または「録音して文字起こし（音声＋PDF作成）」を選択できます。
+3. 「一時停止／再開」は録画・録音を一時停止・再開します。一時停止中の内容は記録されません。
+4. 「終了」を押すと保存します。文字起こしを行う場合はクラウド送信を確認してから解析します。「いいえ」の場合、録音・録画はPCに残ります。
+5. 「結果を見る」でPDFまたは保存先を開きます。
 
-APIキーは既存の環境変数／`.env`を利用します。未設定時に画面から入力したキーは、その起動中だけメモリに保持します。設定ファイルや起動引数には保存しません。
+APIキーは既存の環境変数／`.env`を利用します。「録音だけ保存」ではAPIキーは不要です。文字起こし時に未設定で画面から入力したキーは、その起動中だけメモリに保持します。設定ファイルや起動引数には保存しません。
 
 ### 解析と上限
 
@@ -34,9 +36,12 @@ APIキーは既存の環境変数／`.env`を利用します。未設定時に�
 
 Open `Start_EN.bat` after installing `requirements-app.txt`. A standard Windows Python installation with Tk is required.
 
-- **Record** selects the capture area and runs a three-second PC-audio check. Play audio first. **Pause / Resume** pauses both video and audio; paused content is not recorded.
-- **Finish recording & analyze** saves the media, then requests cloud-upload consent. Declining keeps the recording locally.
-- **Choose video** analyzes an existing file. **View results** opens the PDF. The existing text-only PDF layout is unchanged.
+- **Record** selects the capture area and records screen + PC audio.
+- **Record Audio** records PC playback audio only (no screen capture). Choose either "Save Audio Only" (completely local, no API key needed) or "Transcribe Audio" (audio + PDF report).
+- **Pause / Resume** pauses recording; paused content is not recorded.
+- **Finish** saves the media, then requests cloud-upload consent for transcription. Declining keeps the recording locally.
+- **Choose video** analyzes an existing file. **View results** opens the PDF or audio folder.
+
 - **Settings** controls the language, recording folder, image limit (default 30) and source-audio limit (default 120 minutes). Over-limit audio stops before upload; increase the limit and resume if desired.
 - Existing environment/`.env` API keys are used. Keys entered in the GUI are held only for that app session, not stored in settings or command-line arguments.
 

@@ -10,9 +10,9 @@ Windowsで動作する、録画・動画解析・文字起こしツールです�
 
 ## 新しい操作画面 / Desktop interface
 
-v2.2.0では、`Start.bat` / `Start_EN.bat` からボタン式の操作画面が開きます。「録画する」「動画を選ぶ」「結果を見る」が主な操作です。設定で言語・録画保存先・画像枚数と音声時間の上限を変更できます。詳細と復旧時の注意点は [操作ガイド](USAGE.md) を参照してください。
+v2.3.0では、`Start.bat` / `Start_EN.bat` からボタン式の操作画面が開きます。「録画する」「録音する」「動画を選ぶ」「結果を見る」が主な操作です。「録音する」では画面を録画せずPC音声のみを扱い、「録音だけ保存（完全ローカル・APIキー不要）」または「録音して文字起こし」を選べます。保存・Gemini送信用の音声は自動で超軽量圧縮（Opus 32 kbps / M4A 48 kbps）されます。設定で言語・録画保存先・画像枚数と音声時間の上限を変更できます。詳細と復旧時の注意点は [操作ガイド](USAGE.md) を参照してください。
 
-Version 2.2.0 opens a desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Choose video**, and **View results**. Settings control language, recording folder, image count and audio duration limits. See the [usage and recovery guide](USAGE.md).
+Version 2.3.0 opens a desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Record Audio**, **Choose video**, and **View results**. **Record Audio** captures PC audio without screen recording, allowing you to choose between "Save Audio Only" (completely local, no API key required) or "Transcribe Audio". Audio for storage and Gemini upload is automatically compressed for extreme lightweight efficiency (Opus 32 kbps / M4A 48 kbps). Settings control language, recording folder, image count and audio duration limits. See the [usage and recovery guide](USAGE.md).
 
 ---
 
@@ -51,11 +51,13 @@ The complete source video is not uploaded. The application sends the extracted a
 From [GitHub Releases](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
 
 ### ✨ Features
+- **🆕 Ultra-lightweight Audio-only Modes**: Record internal PC audio without screen capture. Choose "Save Audio Only" (completely local, zero API usage, no API key needed) or "Transcribe Audio" (audio + PDF generation).
+- **Ultra-efficient Audio Compression**: Compresses audio to Opus (32 kbps mono, `audio/ogg`) for Gemini Files API and M4A (48 kbps mono, `audio/m4a`) for local storage, reducing audio payload sizes by up to 98% (approx. 1/48th of original 48 kHz stereo WAV) with automatic duration integrity verification.
 - **Real-time System Audio Recording**: Captures computer internal audio using WASAPI loopback.
 - **Pre-recording Audio Test**: Checks the actual system-audio level for three seconds before screen recording begins.
 - **Gemini transcription and analysis**: Uses `gemini-3.5-flash`, with automatic fallback to `gemini-2.5-flash` and `gemini-3.1-flash-lite` when the primary model is rate-limited or busy.
 - **Automatic Rate-limit Recovery**: Waits and retries automatically for temporary 429/503 errors. Completed stages and images are reused after interruption.
-- **🆕 Video Key Slide Extraction**: Automatically extracts important slides, charts, and documents from recorded videos using Gemini's vision capabilities.
+- **Video Key Slide Extraction**: Automatically extracts important slides, charts, and documents from recorded videos using Gemini's vision capabilities.
 - **Filler Word Removal**: Automatically strips out filler words (e.g., "uhm", "uh", "like") and resolves hallucinated repetitions.
 - **Clean PDF Output**: Keeps the original recording, captured PC audio, and the formatted PDF. Temporary images and analysis files are removed after success.
 
@@ -125,11 +127,13 @@ If this project is useful, please consider giving it a star ⭐
 [GitHub Releases](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest)から`Gemini-Video-Analyzer-Windows-Japanese.zip`をダウンロードして解凍します。最初の一回だけPython 3.10以降で必要なライブラリを入れます。
 
 ### ✨ 主な機能
+- **🆕 超軽量PC音声録音モード**: 画面を録画せずPC内部音声のみを記録。「録音だけ保存（完全ローカル・API不要・APIキー未設定でも使用可能）」と「録音して文字起こし（音声＋PDF作成）」に対応。
+- **高効率音声圧縮（最大約1/48削減）**: Gemini送信用にOpus（32 kbps mono、`audio/ogg`）、ローカル保存用にM4A（48 kbps mono、`audio/m4a`）を元WAVから直接生成。元ファイル比最大98%削減（約1/48）しつつ、整合性検証（duration一致）合格後にのみ元WAVを安全置換。
 - **PCシステム音声録音**: WASAPIループバックを使用し、会議や動画の音声をクリアに直接録音。
 - **録画前の音声テスト**: 録画開始前にPC音声を3秒間確認し、無音やデバイス異常のまま長時間録画することを防止。
 - **Geminiによる文字起こし・解析**: `gemini-3.5-flash` を使用（制限・混雑時は `gemini-2.5-flash`、さらに `gemini-3.1-flash-lite` へ自動切り替え）。
 - **API制限からの自動復旧**: 一時的な429/503エラーでは段階的に待機して自動再試行。中断後も完了済みの工程と画像解析を再利用。
-- **🆕 動画キースライド抽出**: 会議や授業の録画動画から、重要なスライド・チャート・資料をGeminiのAI解析で自動抽出。文字起こしと統合したリッチ議事録を生成。
+- **動画キースライド抽出**: 会議や授業の録画動画から、重要なスライド・チャート・資料をGeminiのAI解析で自動抽出。文字起こしと統合したリッチ議事録を生成。
 - **つなぎ言葉（フィラー）の自動除去**: 「えーっと」「あのー」などを自動で取り除き、同じ言葉が連続するループ現象（ハルシネーション）も自動で除去。
 - **整理されたPDF出力**: 正常終了後は画面録画、PC音声、AIがタイトルを付けたPDFだけを残し、中間画像や解析用ファイルを自動削除。
 

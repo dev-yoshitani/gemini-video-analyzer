@@ -11,6 +11,7 @@ COMMON_FILES = (
     "desktop_app.py", "workflow_control.py", "timeline_analysis.py", "recording_recovery.py",
     "launcher.py", "local_screen_recorder.py", "local_video_analyzer.py",
     "gemini_hybrid_analyzer.py", "gemini_retry.py", "audio_transcriber.py",
+    "audio_compression.py",
     "key_slide_extractor.py", "requirements.txt", "requirements-local.txt",
     "requirements-app.txt", "README.md", "USAGE.md", "LICENSE", ".env.example",
 )

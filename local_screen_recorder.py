@@ -869,6 +869,190 @@ def record_and_analyze(
     return result
 
 
+def record_audio(
+    output_root: Path,
+    language: str = "ja",
+    control=None,
+    auto_compress_storage: bool = True,
+) -> dict[str, Any]:
+    """PC再生音を録音し、WAVファイルとして保存する。画面録画は行わない。"""
+    english = language == "en"
+    try:
+        import pyaudiowpatch  # noqa: F401
+    except ImportError:
+        prefix = "Missing recording libraries: " if english else "録音用ライブラリがありません: "
+        raise RuntimeError(
+            prefix + "PyAudioWPatch\n  pip install -r requirements-local.txt"
+        )
+    session_name = (
+        "Recording_Audio_" if english else "録音_"
+    ) + dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    session_dir = output_root.expanduser().resolve() / session_name
+    session_dir.mkdir(parents=True, exist_ok=False)
+
+    audio_file_name = "PC Audio.wav" if english else "PC音声.wav"
+    audio_path = session_dir / audio_file_name
+    audio = SystemAudioRecorder(audio_path, language=language)
+    if control is not None:
+        audio.pause_event = control.pause
+
+    print("=" * 64)
+    print("  PC Audio Recording" if english else "  PC音声録音")
+    print("=" * 64)
+    if english:
+        print("  - PC playback audio will be recorded (screen is not recorded).")
+        print(f"  - Save location: {session_dir}")
+    else:
+        print("  ・PC再生音を録音します（画面は録画しません）")
+        print(f"  ・保存先: {session_dir}")
+    print()
+
+    if control is None:
+        try:
+            input(
+                "Start playing audio on the PC, then press Enter. "
+                "Recording will begin after a 3-second audio test..."
+                if english
+                else "PCで音声を再生した状態にして、"
+                "Enterキーを押してください（3秒間の音声テスト後に録音開始）..."
+            )
+        except (KeyboardInterrupt, EOFError) as exc:
+            raise RuntimeError("Recording was cancelled." if english else "録音をキャンセルしました。") from exc
+
+    print("\nTesting PC audio for 3 seconds..." if english else "\nPC音声を3秒間テスト中...")
+    try:
+        tested_device, peak_level = test_pc_audio(
+            session_dir / ("Audio Test.wav" if english else "音声テスト.wav"),
+            language=language,
+        )
+    except Exception:
+        try:
+            session_dir.rmdir()
+        except OSError:
+            pass
+        raise
+    print(
+        f"PC audio test OK: {tested_device} (level {peak_level * 100:.1f}%)"
+        if english
+        else f"PC音声テスト OK: {tested_device}（レベル {peak_level * 100:.1f}%）"
+    )
+
+    audio_ok = False
+    if control is not None:
+        control.checkpoint()
+    try:
+        audio.start()
+        print(f"PC audio: {audio.device_name}" if english else f"PC音声: {audio.device_name}")
+    except Exception as exc:
+        audio.close()
+        try:
+            if audio.output_path.is_file():
+                audio.output_path.unlink()
+        except OSError:
+            pass
+        try:
+            session_dir.rmdir()
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"PC audio could not start: {exc}"
+            if english
+            else f"PC音声の録音を開始できませんでした: {exc}"
+        ) from exc
+
+    started_at = time.monotonic()
+    try:
+        print(
+            "\n● Recording. Press Enter to stop."
+            if english
+            else "\n● 録音中です。停止するには Enter キーを押してください。"
+        )
+        if control is None:
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+        else:
+            while not control.stop.wait(0.2):
+                if control.cancel.is_set():
+                    break
+                if audio.error:
+                    raise RuntimeError(f"Audio recording error / 録音異常: {audio.error}")
+                elapsed = (
+                    audio.bytes_written / (audio.rate * audio.channels * 2)
+                    if hasattr(audio, "rate") and audio.rate and audio.channels
+                    else time.monotonic() - started_at
+                )
+                control.emit(
+                    kind="recording",
+                    seconds=elapsed,
+                    level=audio.current_level,
+                    paused=control.pause.is_set(),
+                    silent=not control.pause.is_set() and time.monotonic() - audio.last_sound_at > 15,
+                )
+    finally:
+        if control is not None:
+            control.emit(kind="stage", stage="録音保存")
+        try:
+            audio_ok = audio.stop()
+        except Exception as exc:
+            audio.close()
+            audio_ok = _is_usable_wav(audio.output_path)
+            if audio_ok:
+                print(
+                    (
+                        "Note: ending PC-audio recording had a problem, but the saved audio will be used: "
+                        f"{exc}"
+                    )
+                    if english
+                    else f"注意: 音声録音の終了処理で問題が発生しましたが、保存済みのPC音声を使用します: {exc}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"Warning: failed to save PC audio: {exc}"
+                    if english
+                    else f"警告: PC音声の保存に失敗しました: {exc}",
+                    file=sys.stderr,
+                )
+
+    duration = time.monotonic() - started_at
+    if not audio_path.is_file():
+        raise RuntimeError("The recording audio was not created." if english else "録音音声ファイルが作成されませんでした。")
+    if duration < 0.5:
+        raise RuntimeError("The recording is too short. Record for at least one second." if english else "録音時間が短すぎます。1秒以上録音してください。")
+
+    print(f"\nRecording complete: {duration:.1f} seconds" if english else f"\n録音完了: {duration:.1f}秒")
+    if not audio_ok:
+        raise RuntimeError(
+            "The PC audio was not recorded properly."
+            if english
+            else "PC音声を正常に録音できませんでした。"
+        )
+
+    parts_dir = (session_dir / ".recording_parts").resolve()
+    if parts_dir.parent == session_dir.resolve() and parts_dir.is_dir():
+        shutil.rmtree(parts_dir, ignore_errors=True)
+
+    final_audio_path = audio.output_path
+    if auto_compress_storage:
+        from audio_compression import prepare_storage_audio
+        final_audio_path = prepare_storage_audio(audio.output_path, delete_source_on_success=True)
+
+    if control is not None:
+        control.emit(kind="saved_recording", audio=os.fspath(final_audio_path))
+        control.checkpoint()
+
+    return {
+        "success": True,
+        "recording_dir": os.fspath(session_dir),
+        "audio": os.fspath(final_audio_path),
+        "raw_wav": os.fspath(audio.output_path) if audio.output_path.is_file() else None,
+        "mode": "audio_only",
+    }
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="画面とPC音声を録画して高精度AI解析します。")
     parser.add_argument(

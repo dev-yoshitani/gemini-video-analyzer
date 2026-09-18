@@ -19,6 +19,9 @@ class ReleasePackageTests(unittest.TestCase):
                 with zipfile.ZipFile(archive) as package:
                     names = set(package.namelist())
                     self.assertIn("desktop_app.py", names)
+                    self.assertIn("local_screen_recorder.py", names)
+                    self.assertIn("gemini_hybrid_analyzer.py", names)
+                    self.assertIn("audio_compression.py", names)
                     self.assertIn("USAGE.md", names)
                     self.assertNotIn(".env", names)
                     self.assertNotIn("handover.md", names)

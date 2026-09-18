@@ -18,6 +18,7 @@ import threading
 import datetime
 import time
 import argparse
+from pathlib import Path
 
 
 # ============================================================
@@ -357,65 +358,13 @@ def convert_wav_to_smaller(input_path, output_path, target_rate=16000):
 
 def compress_audio_for_upload(audio_filepath, language="ja"):
     """
-    音声ファイルが大きすぎる場合、Geminiのアップロード時間短縮のためにWAVのみ圧縮する。
-    MP3/M4A/MP4などのフォーマットはすでに圧縮されており、WAVに変換するとかえって巨大化するため
-    そのままアップロードする（Geminiは2GBまで対応）。
-    戻り値: (アップロード用ファイルパス, 一時ファイルかどうか)
+    Geminiアップロード用に音声を最適化する。
+    優先順位: Opus 32 kbps (Ogg) -> AAC 32 kbps (M4A) -> 16 kHz mono WAV
+    戻り値: (アップロード用ファイルパス, 一時ファイルかどうか, MIMEタイプ)
     """
-    file_size_mb = os.path.getsize(audio_filepath) / (1024 * 1024)
-    _, ext = os.path.splitext(audio_filepath)
-    english = language == "en"
-
-    # --- WAVファイル以外（MP3, M4A, 等）はそのまま返す ---
-    if ext.lower() != ".wav":
-        if file_size_mb > 95:
-            print(
-                f"  File size: {file_size_mb:.1f} MB (already compressed; uploading as-is)"
-                if english
-                else f"  ファイルサイズ: {file_size_mb:.1f} MB (圧縮済みフォーマットのためそのままアップロードします)"
-            )
-        else:
-            print(f"  File size: {file_size_mb:.1f} MB" if english else f"  ファイルサイズ: {file_size_mb:.1f} MB")
-        return audio_filepath, False
-
-    # --- WAVファイルの場合 ---
-    if file_size_mb < 50:
-        print(
-            f"  File size: {file_size_mb:.1f} MB (no WAV conversion needed)"
-            if english
-            else f"  ファイルサイズ: {file_size_mb:.1f} MB (WAV変換不要)"
-        )
-        return audio_filepath, False
-
-    # 巨大なWAVファイルの場合はサンプルレートを下げて圧縮
-    print(
-        f"  Compressing the {file_size_mb:.1f} MB WAV file..."
-        if english
-        else f"  WAVファイルサイズが {file_size_mb:.1f} MB のため圧縮します..."
-    )
-    tmp_path = audio_filepath.replace(".wav", "_upload.wav")
-
-    # 極端に大きい場合は8000Hz、それ以外は16000Hz
-    target_rate = 8000 if file_size_mb > 300 else 16000
-
-    print(f"  Converting to {target_rate} Hz mono..." if english else f"  {target_rate}Hz モノラルに変換中...")
-    try:
-        convert_wav_to_smaller(audio_filepath, tmp_path, target_rate=target_rate)
-        result_mb = os.path.getsize(tmp_path) / (1024 * 1024)
-        print(
-            f"  Conversion complete: {file_size_mb:.1f} MB → {result_mb:.1f} MB"
-            if english
-            else f"  変換完了！ {file_size_mb:.1f} MB → {result_mb:.1f} MB"
-        )
-        return tmp_path, True
-    except Exception as e:
-        print(
-            f"  Warning: WAV compression failed: {e}"
-            if english
-            else f"  ⚠ WAV圧縮中にエラーが発生しました: {e}"
-        )
-        print("  Trying to upload the original file." if english else "  元のファイルのままアップロードを試みます。")
-        return audio_filepath, False
+    from audio_compression import prepare_gemini_audio
+    path, mime_type, is_temp = prepare_gemini_audio(Path(audio_filepath))
+    return os.fspath(path), is_temp, mime_type
 
 
 # ============================================================
@@ -586,8 +535,14 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         if english
         else f"\n元ファイル: {file_size_mb:.1f} MB"
     )
-    upload_path, converted_tmp = compress_audio_for_upload(audio_filepath, language=language)
-    converted_tmp = upload_path if converted_tmp else None
+    upload_res = compress_audio_for_upload(audio_filepath, language=language)
+    if isinstance(upload_res, tuple) and len(upload_res) == 3:
+        upload_path, is_temp, detected_mime = upload_res
+        converted_tmp = upload_path if is_temp else None
+    else:
+        upload_path, converted_tmp = upload_res
+        converted_tmp = upload_path if converted_tmp else None
+        detected_mime = None
 
     file_size_mb = os.path.getsize(upload_path) / (1024 * 1024)
     if progress_callback:
@@ -603,11 +558,18 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         else f"音声ファイルをアップロード中... ({file_size_mb:.1f} MB)"
     )
 
-    # MIMEタイプを判定
-    upload_ext = os.path.splitext(upload_path)[1]
-    mime_type, _ = mimetypes.guess_type(upload_path)
-    if not mime_type:
-        mime_type = "audio/mp4" if upload_ext.lower() == ".m4a" else "audio/wav"
+    # MIMEタイプを判定 (Gemini公式推奨: audio/ogg, audio/m4a, audio/wav)
+    upload_ext = os.path.splitext(upload_path)[1].lower()
+    if detected_mime:
+        mime_type = detected_mime
+    elif upload_ext in (".ogg", ".opus"):
+        mime_type = "audio/ogg"
+    elif upload_ext == ".m4a":
+        mime_type = "audio/m4a"
+    elif upload_ext == ".mp3":
+        mime_type = "audio/mp3"
+    else:
+        mime_type = "audio/wav"
 
     safe_filename = f"audio{upload_ext}"
     def upload_audio():

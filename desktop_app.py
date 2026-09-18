@@ -75,6 +75,21 @@ def run_worker():
             result = record_and_analyze(Path(settings["output_root"]), capture_mode="all",
                                         capture_region=job.get("region"), language=language,
                                         control=control, analysis_options=options)
+        elif mode == "record_audio":
+            from local_screen_recorder import record_audio
+            result = record_audio(Path(settings["output_root"]), language=language, control=control, auto_compress_storage=True)
+        elif mode == "record_audio_transcribe":
+            from local_screen_recorder import record_audio
+            rec_result = record_audio(Path(settings["output_root"]), language=language, control=control, auto_compress_storage=False)
+            control.checkpoint()
+            from gemini_hybrid_analyzer import _ask_cloud_consent, transcribe_audio_only
+            if not _ask_cloud_consent(language):
+                from audio_compression import prepare_storage_audio
+                prepare_storage_audio(Path(rec_result["audio"]), delete_source_on_success=True)
+                raise RuntimeError("Audio transcription was cancelled." if language == "en" else "音声文字起こしをキャンセルしました。")
+            result = transcribe_audio_only(rec_result["audio"], language=language,
+                                           max_audio_minutes=settings["max_audio_minutes"])
+            result["recording_dir"] = rec_result["recording_dir"]
         elif mode == "resume":
             result = resume_analysis(job["path"], language=language,
                                      max_candidates=settings["max_candidates"],
@@ -149,6 +164,7 @@ class DesktopApp:
         row = ttk.Frame(body)
         row.pack(fill="x")
         for ja, en, action in [("● 録画する", "● Record", self.record),
+                              ("🎙 録音する", "🎙 Record Audio", self.record_audio_prompt),
                               ("動画を選ぶ", "Choose video", self.choose_video),
                               ("結果を見る", "View results", self.open_result),
                               ("設定", "Settings", self.configure)]:
@@ -187,6 +203,46 @@ class DesktopApp:
         if path:
             self.start("analyze", path)
 
+    def record_audio_prompt(self):
+        if self.busy():
+            return
+        window = self.tk.Toplevel(self.root)
+        window.title(self.tr("録音モードの選択", "Choose Recording Mode"))
+        window.transient(self.root)
+        window.grab_set()
+        window.resizable(False, False)
+
+        ttk = self.ttk
+        frame = ttk.Frame(window, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text=self.tr("PC音声の録音方法を選択してください:", "Select audio recording mode:"),
+                  font=("Yu Gothic UI", 11, "bold")).pack(anchor="w", pady=(0, 14))
+
+        def on_save_only():
+            window.destroy()
+            self.start("record_audio")
+
+        def on_transcribe():
+            window.destroy()
+            self.start("record_audio_transcribe")
+
+        btn1 = ttk.Button(
+            frame,
+            text=self.tr("録音だけ保存（API不要・完全ローカル）", "Save Audio Only (No API / Local only)"),
+            command=on_save_only,
+        )
+        btn1.pack(fill="x", pady=6)
+
+        btn2 = ttk.Button(
+            frame,
+            text=self.tr("録音して文字起こし（音声＋PDF作成）", "Transcribe Audio (Audio + PDF report)"),
+            command=on_transcribe,
+        )
+        btn2.pack(fill="x", pady=6)
+
+        ttk.Button(frame, text=self.tr("キャンセル", "Cancel"), command=window.destroy).pack(anchor="e", pady=(14, 0))
+
     def record(self):
         from tkinter import messagebox, simpledialog
         if self.busy():
@@ -217,15 +273,20 @@ class DesktopApp:
             return
         # Secret is never written into settings, command-line arguments or logs.
         try:
-            from dotenv import load_dotenv
-            load_dotenv(BASE / ".env")
-            key = self.api_key or os.environ.get("GEMINI_API_KEY", "")
-            if not key:
-                key = simpledialog.askstring("Gemini API", self.tr("APIキー（この起動中だけ保持）", "API key (held for this session only)"), show="*")
-            if not key or not key.strip():
-                return
-            self.api_key = key.strip()
-            env = dict(os.environ, GEMINI_API_KEY=self.api_key, PYTHONUTF8="1", PYTHONUNBUFFERED="1")
+            self.current_mode = mode
+            requires_api_key = mode not in ("record_audio",)
+            if requires_api_key:
+                from dotenv import load_dotenv
+                load_dotenv(BASE / ".env")
+                key = self.api_key or os.environ.get("GEMINI_API_KEY", "")
+                if not key:
+                    key = simpledialog.askstring("Gemini API", self.tr("APIキー（この起動中だけ保持）", "API key (held for this session only)"), show="*")
+                if not key or not key.strip():
+                    return
+                self.api_key = key.strip()
+                env = dict(os.environ, GEMINI_API_KEY=self.api_key, PYTHONUTF8="1", PYTHONUNBUFFERED="1")
+            else:
+                env = dict(os.environ, PYTHONUTF8="1", PYTHONUNBUFFERED="1")
             self.terminal_event = False
             executable = Path(sys.executable).with_name("python.exe") if os.name == "nt" else Path(sys.executable)
             self.process = subprocess.Popen([str(executable), str(Path(__file__).resolve()), "--worker"],
@@ -234,7 +295,7 @@ class DesktopApp:
                                             cwd=BASE, env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             self.process.stdin.write(json.dumps({"mode": mode, "path": path, "region": region, "settings": self.settings}) + "\n")
             self.process.stdin.flush()
-            self.recording = mode == "record"
+            self.recording = mode in ("record", "record_audio", "record_audio_transcribe")
             self.paused = False
             self.status.set(self.tr("開始しています…", "Starting…"))
             process = self.process
@@ -297,17 +358,30 @@ class DesktopApp:
                 self.recording = False
                 self.pause_button.configure(state="disabled")
                 self.stop_button.configure(state="disabled")
-                accepted = messagebox.askyesno(self.tr("クラウド送信の確認", "Cloud upload consent"), self.tr(
-                    f"音声と候補画像をGeminiへ送信します。元動画全体は送信しません。\n"
-                    f"上限: 画像{self.settings['max_candidates']}枚・音声{self.settings['max_audio_minutes']}分\n"
-                    "API利用料金が発生する場合があります。送信しますか？",
-                    f"Send audio and selected images to Gemini? The full video is not uploaded.\n"
-                    f"Limits: {self.settings['max_candidates']} images / {self.settings['max_audio_minutes']} minutes.\nAPI charges may apply."))
+                if getattr(self, "current_mode", None) == "record_audio_transcribe":
+                    consent_prompt = self.tr(
+                        f"音声をGeminiへ送信します。画像は送信しません。\n"
+                        f"上限: 音声{self.settings['max_audio_minutes']}分\n"
+                        "API利用料金が発生する場合があります。送信しますか？",
+                        f"Send audio to Gemini? Images are not uploaded.\n"
+                        f"Limit: {self.settings['max_audio_minutes']} minutes.\nAPI charges may apply.",
+                    )
+                else:
+                    consent_prompt = self.tr(
+                        f"音声と候補画像をGeminiへ送信します。元動画全体は送信しません。\n"
+                        f"上限: 画像{self.settings['max_candidates']}枚・音声{self.settings['max_audio_minutes']}分\n"
+                        "API利用料金が発生する場合があります。送信しますか？",
+                        f"Send audio and selected images to Gemini? The full video is not uploaded.\n"
+                        f"Limits: {self.settings['max_candidates']} images / {self.settings['max_audio_minutes']} minutes.\nAPI charges may apply.",
+                    )
+                accepted = messagebox.askyesno(self.tr("クラウド送信の確認", "Cloud upload consent"), consent_prompt)
                 self.send("consent", accepted=accepted)
             elif kind == "recording":
                 self.pause_button.configure(state="normal")
                 self.stop_button.configure(state="normal")
-                label = self.tr("一時停止", "Paused") if event["paused"] else self.tr("録画中", "Recording")
+                is_audio_only = getattr(self, "current_mode", "") in ("record_audio", "record_audio_transcribe")
+                rec_label = self.tr("録音中", "Recording Audio") if is_audio_only else self.tr("録画中", "Recording")
+                label = self.tr("一時停止", "Paused") if event["paused"] else rec_label
                 warning = self.tr(" — 無音が続いています。再生・デバイスを確認してください。", " — No audio detected. Check playback/device.") if event["silent"] else ""
                 self.status.set(f"{label} {event['seconds']:.0f}s | {self.tr('音量', 'Audio')} {event['level'] * 100:.0f}%{warning}")
                 self.progress["value"] = event["level"] * 100
@@ -318,25 +392,31 @@ class DesktopApp:
             elif kind == "waiting":
                 self.status.set(self.tr(f"API制限・混雑のため{event['seconds']}秒待機中", f"API busy / rate limited; waiting {event['seconds']} seconds"))
             elif kind == "stage":
-                if event["stage"] == "録画保存":
+                if event["stage"] in ("録画保存", "録音保存"):
                     self.recording = False
                     self.pause_button.configure(state="disabled")
                     self.stop_button.configure(state="disabled")
-                stages = {"録画保存": "Saving recording", "シーン候補抽出": "Selecting scenes", "音声準備": "Preparing audio", "文字起こし": "Transcribing", "画像解析": "Analyzing scenes", "PDF生成": "Creating PDF"}
+                stages = {"録画保存": "Saving recording", "録音保存": "Saving audio", "シーン候補抽出": "Selecting scenes", "音声準備": "Preparing audio", "文字起こし": "Transcribing", "画像解析": "Analyzing scenes", "PDF生成": "Creating PDF"}
                 self.status.set(self.tr(event["stage"], stages.get(event["stage"], "Preparing")))
             elif kind == "saved_recording":
-                self.result_path = str(Path(event["video"]).parent)
+                target = event.get("video") or event.get("audio")
+                if target:
+                    self.result_path = str(Path(target).parent)
             elif kind in ("error", "complete"):
                 self.terminal_event = True
                 if kind == "complete":
-                    self.result_path = event["result"]["pdf"]
+                    res = event.get("result", {})
+                    self.result_path = res.get("pdf") or res.get("audio") or res.get("recording_dir") or self.result_path
                     self.settings["last_result"] = self.result_path
                     try:
                         from timeline_analysis import atomic_json
                         atomic_json(self.settings_path, self.settings)
                     except OSError:
                         pass  # A saved PDF remains usable even if preferences are read-only.
-                    self.status.set(self.tr("完了しました。「結果を見る」でPDFを開けます。", "Complete. Choose View results to open the PDF."))
+                    if res.get("mode") == "audio_only":
+                        self.status.set(self.tr("録音が完了しました。「結果を見る」で保存先を開けます。", "Recording complete. Choose View results to open the folder."))
+                    else:
+                        self.status.set(self.tr("完了しました。「結果を見る」でPDFを開けます。", "Complete. Choose View results to open the PDF."))
                     self.progress["value"] = 100
                 else:
                     self.status.set(self.tr("中断しました。保存済みの処理は再開できます。", "Stopped. Saved work can be resumed."))

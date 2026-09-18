@@ -844,6 +844,112 @@ def resume_analysis(
     )
 
 
+def transcribe_audio_only(
+    audio_path: str | os.PathLike[str],
+    *,
+    output_dir: str | os.PathLike[str] | None = None,
+    language: str = "ja",
+    max_audio_minutes: int = 120,
+) -> dict[str, Any]:
+    """PC音声の文字起こしと議事録PDF生成（画像解析なし）。"""
+    from timeline_analysis import transcribe_chunks
+    from workflow_control import checkpoint, notify
+    from audio_transcriber import (
+        create_pdf,
+        generate_title_from_text,
+        transcribe_with_gemini,
+    )
+
+    language = "en" if language == "en" else "ja"
+    english = language == "en"
+    source_audio = Path(audio_path).expanduser().resolve()
+    if not source_audio.is_file():
+        raise FileNotFoundError(
+            f"Audio file not found: {source_audio}"
+            if english
+            else f"音声ファイルが見つかりません: {source_audio}"
+        )
+
+    if output_dir is None:
+        destination = source_audio.parent / ("Analysis Results" if english else "文字起こし結果")
+    else:
+        destination = Path(output_dir).expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+
+    checkpoint()
+    api_key = _get_api_key(language)
+
+    from audio_compression import get_audio_duration, prepare_storage_audio
+
+    audio_duration = get_audio_duration(source_audio)
+    if audio_duration is None:
+        try:
+            with wave.open(os.fspath(source_audio), "rb") as audio_info:
+                audio_duration = audio_info.getnframes() / audio_info.getframerate()
+        except Exception:
+            audio_duration = 0.0
+
+    if audio_duration > max_audio_minutes * 60:
+        raise ValueError("音声時間が設定した上限を超えています / Audio exceeds the configured limit")
+
+    checkpoint()
+    notify(stage="文字起こし")
+    print("\nCreating a high-accuracy transcript with Gemini..." if english else "\nGeminiで高精度文字起こし中...")
+    chunks_dir = destination / "Transcript_Chunks"
+    transcript, timeline = transcribe_chunks(
+        source_audio,
+        api_key,
+        chunks_dir,
+        transcribe_with_gemini,
+        language=language,
+        max_audio_minutes=max_audio_minutes,
+    )
+    transcript = (transcript or "").strip()
+    if not transcript:
+        raise RuntimeError("Gemini returned an empty transcript." if english else "Geminiの文字起こし結果が空でした。")
+
+    transcript_path = destination / ("Transcript.txt" if english else "文字起こし.txt")
+    transcript_path.write_text(transcript + "\n", encoding="utf-8")
+
+    checkpoint()
+    notify(stage="PDF生成")
+    title = _safe_filename(
+        generate_title_from_text(transcript, api_key=api_key, language=language),
+        fallback="Audio Transcription" if english else "音声文字起こし",
+    )
+    pdf_path = destination / (
+        f"{title}_Transcription_Report.pdf" if english else f"{title}_文字起こしレポート.pdf"
+    )
+    _publish_pdf(
+        create_pdf,
+        pdf_path,
+        full_text=transcript,
+        timestamped_text="",
+        audio_filename=source_audio.name,
+        key_slides=None,
+        document_title=title,
+        language=language,
+    )
+
+    saved_storage_audio = prepare_storage_audio(source_audio, delete_source_on_success=True)
+
+    print(
+        f"\nAudio transcription complete.\nPDF: {pdf_path}"
+        if english
+        else f"\n音声の文字起こしが完了しました。\nPDF: {pdf_path}"
+    )
+
+    return {
+        "success": True,
+        "output_dir": os.fspath(destination),
+        "pdf": os.fspath(pdf_path),
+        "audio": os.fspath(saved_storage_audio),
+        "transcript_chars": len(transcript),
+        "mode": "audio_transcribe",
+    }
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="音声と候補画像だけをGeminiへ送り、解析結果PDFを生成します。"

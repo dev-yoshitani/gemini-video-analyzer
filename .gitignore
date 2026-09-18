@@ -40,6 +40,7 @@ pip-delete-this-directory.txt
 *.swp
 Thumbs.db
 .DS_Store
+.agents/
 
 # Recording and generated analysis data
 *.mp4

@@ -6,11 +6,11 @@
 
 A Windows desktop application that records or analyzes video, selects meaningful scene changes locally, and uses the Gemini API for transcription and analysis. The recommended workflow keeps the recording and a structured PDF report.
 
-Windowsで動作する、録画・動画解析・文字起こしツールです。PC内で重要な場面候補を選別し、Gemini APIを活用して整形済みPDFを自動生成します。
+Windowsで動作する録画・動画解析・文字起こしツールです。PC内で重要な場面の候補を自動選別し、Gemini APIを活用して要約・文字起こし・画像解説をまとめたPDFレポートを生成します。
 
 ## 新しい操作画面 / Desktop interface
 
-v2.3.0では、`Start.bat` / `Start_EN.bat` からボタン式の操作画面が開きます。「録画する」「録音する」「動画を選ぶ」「結果を見る」が主な操作です。「録音する」では画面を録画せずPC音声のみを扱い、「録音だけ保存（完全ローカル・APIキー不要）」または「録音して文字起こし」を選べます。保存・Gemini送信用の音声は自動で超軽量圧縮（Opus 32 kbps / M4A 48 kbps）されます。設定で言語・録画保存先・画像枚数と音声時間の上限を変更できます。詳細と復旧時の注意点は [操作ガイド](USAGE.md) を参照してください。
+v2.3.0より、`Start.bat`（英語版は `Start_EN.bat`）から直感的なボタン操作の画面を利用できるようになりました。「録画する」「録音する」「動画を選ぶ」「結果を見る」の4つの基本操作で進められます。「録音する」では画面をキャプチャせずPC内部音声のみを記録でき、「録音だけ保存（完全ローカル・APIキー不要）」と「録音して文字起こし」のいずれかを選択できます。保存およびGemini送信用の音声データは、自動的に超軽量フォーマット（Opus 32 kbps / M4A 48 kbps）へ高圧縮されます。設定画面では表示言語、保存先フォルダ、画像候補数や音声時間の上限を調整できます。詳しい使い方や中断時の復旧手順は [操作ガイド](USAGE.md) をご覧ください。
 
 Version 2.3.0 opens a desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Record Audio**, **Choose video**, and **View results**. **Record Audio** captures PC audio without screen recording, allowing you to choose between "Save Audio Only" (completely local, no API key required) or "Transcribe Audio". Audio for storage and Gemini upload is automatically compressed for extreme lightweight efficiency (Opus 32 kbps / M4A 48 kbps). Settings control language, recording folder, image count and audio duration limits. See the [usage and recovery guide](USAGE.md).
 
@@ -18,9 +18,9 @@ Version 2.3.0 opens a desktop interface from `Start.bat` / `Start_EN.bat`. Use *
 
 ## 実装のポイント / Engineering highlights
 
-- [録画](local_screen_recorder.py)・[ローカル動画処理](local_video_analyzer.py)と、[Gemini連携・PDF生成](gemini_hybrid_analyzer.py)を分離。
-- APIの一時エラーに対する[再試行](gemini_retry.py)と、処理済み結果を保存した途中再開に対応。
-- [テスト](tests/)と[日英の配布物](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest)を用意。WindowsとGemini APIキーが必要です。
+- **責務の分離**: [録画処理](local_screen_recorder.py)・[ローカル動画処理](local_video_analyzer.py)と、[Gemini連携・PDF生成](gemini_hybrid_analyzer.py)を明確に分離。
+- **耐障害性**: APIの一時的なエラーに対する[自動再試行](gemini_retry.py)と、処理済み区間を保持した安全な途中再開に対応。
+- **検証と国際化**: 各種[テスト](tests/)を整備し、日英両対応の[配布パッケージ](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest)を提供。
 
 ## Workflow
 
@@ -124,68 +124,73 @@ If this project is useful, please consider giving it a star ⭐
 
 [![日本語版ZIPをダウンロード](https://img.shields.io/badge/ダウンロード-日本語版ZIP-green?style=for-the-badge&logo=github)](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest/download/Gemini-Video-Analyzer-Windows-Japanese.zip)
 
-[GitHub Releases](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest)から`Gemini-Video-Analyzer-Windows-Japanese.zip`をダウンロードして解凍します。最初の一回だけPython 3.10以降で必要なライブラリを入れます。
+[GitHub Releases](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest) から `Gemini-Video-Analyzer-Windows-Japanese.zip` をダウンロードして解凍します。
 
-### ✨ 主な機能
-- **🆕 超軽量PC音声録音モード**: 画面を録画せずPC内部音声のみを記録。「録音だけ保存（完全ローカル・API不要・APIキー未設定でも使用可能）」と「録音して文字起こし（音声＋PDF作成）」に対応。
-- **高効率音声圧縮（最大約1/48削減）**: Gemini送信用にOpus（32 kbps mono、`audio/ogg`）、ローカル保存用にM4A（48 kbps mono、`audio/m4a`）を元WAVから直接生成。元ファイル比最大98%削減（約1/48）しつつ、整合性検証（duration一致）合格後にのみ元WAVを安全置換。
-- **PCシステム音声録音**: WASAPIループバックを使用し、会議や動画の音声をクリアに直接録音。
-- **録画前の音声テスト**: 録画開始前にPC音声を3秒間確認し、無音やデバイス異常のまま長時間録画することを防止。
-- **Geminiによる文字起こし・解析**: `gemini-3.5-flash` を使用（制限・混雑時は `gemini-2.5-flash`、さらに `gemini-3.1-flash-lite` へ自動切り替え）。
-- **API制限からの自動復旧**: 一時的な429/503エラーでは段階的に待機して自動再試行。中断後も完了済みの工程と画像解析を再利用。
-- **動画キースライド抽出**: 会議や授業の録画動画から、重要なスライド・チャート・資料をGeminiのAI解析で自動抽出。文字起こしと統合したリッチ議事録を生成。
-- **つなぎ言葉（フィラー）の自動除去**: 「えーっと」「あのー」などを自動で取り除き、同じ言葉が連続するループ現象（ハルシネーション）も自動で除去。
-- **整理されたPDF出力**: 正常終了後は画面録画、PC音声、AIがタイトルを付けたPDFだけを残し、中間画像や解析用ファイルを自動削除。
+#### 前提環境とインストール
+- **対応OS**: Windows 10 / 11
+- **Python環境**: Python 3.10 以降（Tkinterを含む標準インストーラー版）
 
-### 🎯 高精度AI解析 + PDF（推奨）
-
-`Start.bat` の「録画する」「動画を選ぶ」から、PC内でシーン候補と音声を取り出し、Geminiで文字起こしと画像内容の解析を行います。元動画全体は送信せず、音声と候補画像だけを確認後に送信します。
-
-出力PDFには画像そのものを埋め込まず、各場面の時刻・重要度・画像解析の説明・画像内で検出した主要テキストと、文字起こし全文をまとめます。抽出画像などの中間ファイルはPDF完成後に自動削除します。
-
-初回だけ、アプリに必要なライブラリをインストールします：
+解凍したフォルダ内でPowerShellを開き、初回のみ以下のコマンドで必要なライブラリをインストールします。
 
 ```powershell
 py -3 -m pip install -r requirements-app.txt
 ```
 
-普段は `Start.bat` を開きます。「録画する」では録画範囲を選択後、3秒間の音声テストを行います。「録画を終了して解析」を押し、クラウド送信に同意するとPDF生成まで進みます。動画を `Start.bat` にドラッグ＆ドロップする方法も利用できます。従来のコンソール画面は `python launcher.py` から利用できます。
-
-高精度AI解析中に一時的なAPI制限や混雑を検出すると、待機時間を段階的に延ばしながら自動再試行します。それでも完了できない場合やアプリを終了した場合は、シーン候補・文字起こし・画像ごとの解析結果が自動保存されます。次回 `Start.bat` の「未完了の高精度AI解析を途中から再開」を選ぶと、完了済みの処理を再利用し、残りから続行します。
-
-録画データは `output/local_recordings/録画_日時/` に保存されます。中には `画面録画.mp4`、`PC音声.wav`、`AI解析結果` フォルダが作られ、解析結果は「内容のタイトル_解析レポート.pdf」のような分かりやすい名前で保存されます。選んだ録画範囲内に通知や個人的な情報が映らないことを、開始前に確認してください。
-
-### 🛠️ 初期設定: Gemini API キーの取得
-1. [Google AI Studio](https://aistudio.google.com/apikey) にアクセス。
-2. 無料のAPIキーを作成します。
-
-*(※難しい環境変数の設定は不要です！アプリを最初に起動したときに画面から入力できます。)*
+### 🛠️ 初期設定: Gemini APIキーの取得
+1. [Google AI Studio](https://aistudio.google.com/apikey) で無料のAPIキーを取得します。
+2. 初回起動時にAPIキーの入力画面が表示されます。一度入力すれば利用可能になります（環境変数の手動設定は不要です）。
+   ※「録音だけ保存（完全ローカル）」を使用する場合、APIキーは不要です。
 
 ---
 
 ### 🚀 使い方
 
-#### 1. おすすめの使い方
+#### 1. アプリの起動
+`Start.bat` をダブルクリックして起動します。ボタン操作のデスクトップ画面が開きます。
 
-**Start.bat** をダブルクリックします。以下を選べます。
+- **録画する**: 録画範囲（「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」）を選び、3秒間の音声テストを経て録画を開始します。録画終了後、内容の確認を経てAI解析とPDFレポート生成へ進みます。
+- **録音する**: 画面録画を行わずPC内部音声のみを記録します。「録音だけ保存（完全ローカル・API不要）」と「録音して文字起こし」のいずれかを選択できます。
+- **動画を選ぶ**: 保存済みの動画ファイルを選択してAI解析を行います。動画ファイルを `Start.bat` に直接ドラッグ＆ドロップして解析することも可能です。
+- **結果を見る**: 作成されたPDFレポートや保存先フォルダを素早く開きます。
 
-1. 録画して高精度AI解析・解析結果PDF
-2. 保存済み動画を高精度AI解析・解析結果PDF
-3. 未完了の高精度AI解析を途中から再開
-4. 従来のGemini文字起こしツール
+#### 2. 中断と途中再開
+処理中に一時的なAPI制限（429エラー等）や混雑を検知した場合は、待機時間を調整しながら自動で再試行します。途中でアプリを終了した場合でも、完了済みの文字起こしや画像解析データが保存されているため、次回起動時に「未完了一覧」から続きを安全に再開できます。
 
-動画ファイルを **Start.bat** へドラッグ＆ドロップしても解析できます。録画前には「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」から範囲を選びます。
+#### 3. 保存先と出力ファイル
+録画セッションが完了すると、成果物は `output/local_recordings/録画_<日時>/` に保存されます。
+
+```text
+output/local_recordings/録画_<日時>/
+├── 画面録画.mp4
+├── PC音声.wav（または圧縮音声）
+└── AI解析結果/
+    └── <内容に応じたタイトル>_解析レポート.pdf
+```
+PDFレポートの完成後、抽出に使用した一時的な中間画像や作業用データは自動で削除されます。
 
 > [!WARNING]
-> **画面録画モードの注意（プライバシーについて）**
-> - 選んだ録画範囲内の画面だけが録画されますが、通知や個人情報が映らないように注意してください。
-> - **重要**: 元動画はPC内に残ります。Geminiへ送るのは、確認後のPC音声とPC内で厳選した場面候補画像だけです。
-> - パスワードや機密情報が映り込まないよう十分ご注意ください。
-> - 会議などで必要な録画の許可を得た上でご利用ください。
+> **プライバシーとデータ送信に関する注意**
+> - **元動画はクラウドへ送信されません**: PC内で抽出した音声と、選別された重要場面の静止画候補のみを、ユーザーの確認を経てGemini APIへ送信します。
+> - **録画範囲の確認**: 選択した録画範囲内の画面のみが記録されます。通知ポップアップや個人チャットなど、機密情報の映り込みにご注意ください。
+> - **録画の同意**: 会議や授業を録画・録音する際は、参加者の同意や利用規約を事前にご確認ください。
 
-従来の音声文字起こしだけを使う場合は、`Start.bat`のメニュー4を選びます。
+※従来のコンソールメニューで利用したい場合は、`python launcher.py` を実行してください。
 
-このプロジェクトが役に立ったら、Starを押してもらえると嬉しいです ⭐
+---
+
+### ✨ 主な機能
+
+- **🆕 超軽量PC音声録音モード**: 画面を録画せずPC内部音声のみを記録。「録音だけ保存（完全ローカル・API不要・APIキー未設定でも使用可能）」と「録音して文字起こし（音声＋PDF作成）」に対応。
+- **高効率な音声圧縮（最大約98%削減）**: 元のWAV音声から、Gemini送信用にOpus（32 kbps mono、`audio/ogg`）、ローカル保存用にM4A（48 kbps mono、`audio/m4a`）を直接生成。元ファイル比で最大98%（約1/48）削減し、再生時間の整合性検証に合格した後にのみ元ファイルを安全に置き換えます。
+- **クリアなPCシステム音声録音**: WASAPIループバック録音を採用し、オンライン会議や動画の音声をノイズなく直接キャプチャ。
+- **録画前の音声テスト**: 録画開始前にPCの再生音声を3秒間チェックし、無音やオーディオデバイスの不調に気づかないまま録画してしまうミスを防止。
+- **Geminiによる高精度な文字起こし・解析**: 高速・高精度な `gemini-3.5-flash` を標準採用。混雑時や利用制限時には `gemini-2.5-flash` や `gemini-3.1-flash-lite` へ自動で切り替えて処理を継続。
+- **API制限からの自動復旧**: 429や503などの一時的エラーを検知すると指数バックオフで自動再試行。中断時も完了済みの文字起こしや画像解析を再利用し、重複課金や無駄な処理を防ぎます。
+- **動画キースライドの自動抽出**: 会議や授業の録画動画から、重要なスライド・図表・資料をGeminiの視覚解析で自動抽出。発言内容と統合した見やすい議事録PDFを生成。
+- **つなぎ言葉（フィラー）とループの自動除去**: 「えーっと」「あのー」などの不要なつなぎ言葉を自動で取り除き、同じ言葉が連続するループ現象（ハルシネーション）も自動で整理。
+- **整理されたPDF出力**: 処理完了後は画面録画、PC音声、要約タイトルが付いたPDFレポートのみを残し、中間画像や解析用作業ファイルを自動削除。
+
+このプロジェクトが役に立ちましたら、ぜひGitHubで Star（⭐）をお願いします！
 ---
 
 
@@ -196,9 +201,11 @@ py -3 -m pip install -r requirements-app.txt
 
 ---
 
-## Repository rename and compatibility
+## Repository rename and compatibility / リポジトリ名の変更と互換性
 
 The repository was renamed from `gemini-voice-transcriber` to `gemini-video-analyzer` because the primary workflow now covers recording, local scene selection, Gemini analysis, transcription, and PDF reporting. Legacy internal names such as `audio_transcriber.py` and `Gemini_CLI_Transcriber` remain unchanged so existing launchers and scripts keep working.
+
+録画・ローカルシーン選別・Gemini解析・文字起こし・PDFレポート生成までを一貫して扱うワークフローへ拡張されたため、リポジトリ名を `gemini-voice-transcriber` から `gemini-video-analyzer` へ変更しました。既存の起動バッチや各種スクリプトとの互換性を保つため、`audio_transcriber.py` や `Gemini_CLI_Transcriber` などの内部名称は変更せず維持されています。
 
 ---
 

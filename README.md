@@ -10,9 +10,9 @@ Windowsで動作する録画・動画解析・文字起こしツールです。P
 
 ## 新しい操作画面 / Desktop interface
 
-v2.3.0より、`Start.bat`（英語版は `Start_EN.bat`）から直感的なボタン操作の画面を利用できるようになりました。「録画する」「録音する」「動画を選ぶ」「結果を見る」の4つの基本操作で進められます。「録音する」では画面をキャプチャせずPC内部音声のみを記録でき、「録音だけ保存（完全ローカル・APIキー不要）」と「録音して文字起こし」のいずれかを選択できます。保存およびGemini送信用の音声データは、自動的に超軽量フォーマット（Opus 32 kbps / M4A 48 kbps）へ高圧縮されます。設定画面では表示言語、保存先フォルダ、画像候補数や音声時間の上限を調整できます。詳しい使い方や中断時の復旧手順は [操作ガイド](USAGE.md) をご覧ください。
+`Start.bat`（英語版は `Start_EN.bat`）からボタン操作の画面を開けます。「録画する」「録音して文字起こし」「動画を選ぶ」「結果を見る」で操作できます。「録音して文字起こし」はPCで再生される音声だけを録音し、停止後にGeminiへの送信確認を経て文字起こしPDFを作成します。画面やマイクの記録、画像解析は行いません。正常終了後は音声とPDFだけを保存します。音声圧縮にはFFmpegを利用し、利用できない場合はWAVを保存します。設定や再開手順は [操作ガイド](USAGE.md) をご覧ください。
 
-Version 2.3.0 opens a desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Record Audio**, **Choose video**, and **View results**. **Record Audio** captures PC audio without screen recording, allowing you to choose between "Save Audio Only" (completely local, no API key required) or "Transcribe Audio". Audio for storage and Gemini upload is automatically compressed for extreme lightweight efficiency (Opus 32 kbps / M4A 48 kbps). Settings control language, recording folder, image count and audio duration limits. See the [usage and recovery guide](USAGE.md).
+Open the desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Record audio & transcribe**, **Choose video**, and **View results**. Audio transcription records PC playback only, not the screen or microphone, and asks for Gemini upload consent after stopping. No image analysis runs; successful jobs keep audio and a transcript PDF only. FFmpeg enables compressed audio, with WAV fallback when unavailable. See the [usage and recovery guide](USAGE.md).
 
 ---
 
@@ -51,7 +51,7 @@ The complete source video is not uploaded. The application sends the extracted a
 From [GitHub Releases](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
 
 ### ✨ Features
-- **🆕 Ultra-lightweight Audio-only Modes**: Record internal PC audio without screen capture. Choose "Save Audio Only" (completely local, zero API usage, no API key needed) or "Transcribe Audio" (audio + PDF generation).
+- **Audio recording and transcription**: Record PC playback without screen capture, then create a transcript PDF with Gemini after upload consent. Failed jobs can resume using completed transcript chunks.
 - **Ultra-efficient Audio Compression**: Compresses audio to Opus (32 kbps mono, `audio/ogg`) for Gemini Files API and M4A (48 kbps mono, `audio/m4a`) for local storage, reducing audio payload sizes by up to 98% (approx. 1/48th of original 48 kHz stereo WAV) with automatic duration integrity verification.
 - **Real-time System Audio Recording**: Captures computer internal audio using WASAPI loopback.
 - **Pre-recording Audio Test**: Checks the actual system-audio level for three seconds before screen recording begins.
@@ -139,7 +139,6 @@ py -3 -m pip install -r requirements-app.txt
 ### 🛠️ 初期設定: Gemini APIキーの取得
 1. [Google AI Studio](https://aistudio.google.com/apikey) で無料のAPIキーを取得します。
 2. 初回起動時にAPIキーの入力画面が表示されます。一度入力すれば利用可能になります（環境変数の手動設定は不要です）。
-   ※「録音だけ保存（完全ローカル）」を使用する場合、APIキーは不要です。
 
 ---
 
@@ -149,7 +148,7 @@ py -3 -m pip install -r requirements-app.txt
 `Start.bat` をダブルクリックして起動します。ボタン操作のデスクトップ画面が開きます。
 
 - **録画する**: 録画範囲（「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」）を選び、3秒間の音声テストを経て録画を開始します。録画終了後、内容の確認を経てAI解析とPDFレポート生成へ進みます。
-- **録音する**: 画面録画を行わずPC内部音声のみを記録します。「録音だけ保存（完全ローカル・API不要）」と「録音して文字起こし」のいずれかを選択できます。
+- **録音して文字起こし**: PCで再生される音声だけを記録します。「録音を終了して文字起こし」を押し、送信確認で「はい」を選ぶと、Geminiで文字起こしPDFを作成します。画面やマイクの記録、画像解析は行いません。
 - **動画を選ぶ**: 保存済みの動画ファイルを選択してAI解析を行います。動画ファイルを `Start.bat` に直接ドラッグ＆ドロップして解析することも可能です。
 - **結果を見る**: 作成されたPDFレポートや保存先フォルダを素早く開きます。
 
@@ -180,7 +179,7 @@ PDFレポートの完成後、抽出に使用した一時的な中間画像や�
 
 ### ✨ 主な機能
 
-- **🆕 超軽量PC音声録音モード**: 画面を録画せずPC内部音声のみを記録。「録音だけ保存（完全ローカル・API不要・APIキー未設定でも使用可能）」と「録音して文字起こし（音声＋PDF作成）」に対応。
+- **PC音声の録音と文字起こし**: 画面を録画せずPC内部音声のみを記録し、送信確認後にGeminiで文字起こしPDFを作成します。失敗時は完了済みの文字起こし区間を再利用して再開できます。
 - **高効率な音声圧縮（最大約98%削減）**: 元のWAV音声から、Gemini送信用にOpus（32 kbps mono、`audio/ogg`）、ローカル保存用にM4A（48 kbps mono、`audio/m4a`）を直接生成。元ファイル比で最大98%（約1/48）削減し、再生時間の整合性検証に合格した後にのみ元ファイルを安全に置き換えます。
 - **クリアなPCシステム音声録音**: WASAPIループバック録音を採用し、オンライン会議や動画の音声をノイズなく直接キャプチャ。
 - **録画前の音声テスト**: 録画開始前にPCの再生音声を3秒間チェックし、無音やオーディオデバイスの不調に気づかないまま録画してしまうミスを防止。

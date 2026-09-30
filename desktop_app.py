@@ -82,11 +82,7 @@ def run_worker():
             from local_screen_recorder import record_audio
             rec_result = record_audio(Path(settings["output_root"]), language=language, control=control, auto_compress_storage=False)
             control.checkpoint()
-            from gemini_hybrid_analyzer import _ask_cloud_consent, transcribe_audio_only
-            if not _ask_cloud_consent(language):
-                from audio_compression import prepare_storage_audio
-                prepare_storage_audio(Path(rec_result["audio"]), delete_source_on_success=True)
-                raise RuntimeError("Audio transcription was cancelled." if language == "en" else "音声文字起こしをキャンセルしました。")
+            from gemini_hybrid_analyzer import transcribe_audio_only
             result = transcribe_audio_only(rec_result["audio"], language=language,
                                            max_audio_minutes=settings["max_audio_minutes"])
             result["recording_dir"] = rec_result["recording_dir"]
@@ -102,14 +98,9 @@ def run_worker():
                 result = analyze_with_gemini(media["video"], audio_path=media.get("audio"),
                                              language=language, **options)
             else:
-                from audio_compression import prepare_storage_audio
-                saved_audio = prepare_storage_audio(media["audio"], delete_source_on_success=True)
-                result = {
-                    "success": True,
-                    "audio": str(saved_audio),
-                    "mode": "audio_only",
-                    "recording_dir": str(job["path"]),
-                }
+                from gemini_hybrid_analyzer import transcribe_audio_only
+                result = transcribe_audio_only(media["audio"], language=language,
+                                               max_audio_minutes=settings["max_audio_minutes"])
         else:
             from launcher import _find_sidecar_audio
             result = analyze_with_gemini(job["path"], audio_path=_find_sidecar_audio(job["path"]),
@@ -174,7 +165,7 @@ class DesktopApp:
         row = ttk.Frame(body)
         row.pack(fill="x")
         for ja, en, action in [("● 録画する", "● Record", self.record),
-                              ("🎙 録音する", "🎙 Record Audio", self.record_audio_prompt),
+                              ("録音して文字起こし", "Record audio & transcribe", self.record_audio_prompt),
                               ("動画を選ぶ", "Choose video", self.choose_video),
                               ("結果を見る", "View results", self.open_result),
                               ("設定", "Settings", self.configure)]:
@@ -268,59 +259,17 @@ class DesktopApp:
         ttk.Button(frame, text=self.tr("閉じる", "Close"), command=window.destroy).pack(anchor="e", pady=(8, 0))
 
     def record_audio_prompt(self):
+        from tkinter import messagebox
         if self.busy():
             return
-        window = self.tk.Toplevel(self.root)
-        window.title(self.tr("録音モードの選択", "Choose Recording Mode"))
-        window.transient(self.root)
-        window.grab_set()
-        window.resizable(False, False)
-
-        ttk = self.ttk
-        frame = ttk.Frame(window, padding=20)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text=self.tr("PC音声の録音方法を選択してください:", "Select audio recording mode:"),
-                  font=("Yu Gothic UI", 11, "bold")).pack(anchor="w", pady=(0, 14))
-
-        def on_save_only():
-            window.destroy()
-            self.start("record_audio")
-
-        def on_transcribe():
-            window.destroy()
+        if messagebox.askokcancel(self.tr("録音の確認", "Audio recording consent"), self.tr(
+                "PCで再生される音声だけを録音します。画面やマイクは記録しません。\n"
+                "PCで音声を再生してください。開始前に3秒間の音声テストを行います。\n"
+                "停止後、送信確認を経てGeminiで文字起こしし、音声とPDFを保存します。",
+                "Record PC playback audio only, not the screen or microphone.\n"
+                "Start PC audio playback for the 3-second audio test.\n"
+                "After stopping and upload consent, Gemini creates a transcript PDF.")):
             self.start("record_audio_transcribe")
-
-        btn1 = ttk.Button(
-            frame,
-            text=self.tr("録音だけ保存（API不要・完全ローカル）", "Save Audio Only (No API / Local only)"),
-            command=on_save_only,
-        )
-        btn1.pack(fill="x", pady=6)
-
-        btn2 = ttk.Button(
-            frame,
-            text=self.tr("録音して文字起こし（音声＋PDF作成）", "Transcribe Audio (Audio + PDF report)"),
-            command=on_transcribe,
-        )
-        btn2.pack(fill="x", pady=6)
-
-        from audio_compression import get_compression_status
-        status = get_compression_status(self.language)
-        status_frame = ttk.Frame(frame)
-        status_frame.pack(fill="x", pady=(10, 4))
-        if status["has_ffmpeg"]:
-            status_text = self.tr("✔ 音声圧縮: Opus 32k / M4A 48k (FFmpeg有効・超軽量)",
-                                  "✔ Audio compression: Opus 32k / M4A 48k (FFmpeg active)")
-            ttk.Label(status_frame, text=status_text, foreground="#166534", font=("Yu Gothic UI", 9)).pack(side="left")
-        else:
-            status_text = self.tr("⚠️ 音声圧縮: 16 kHz WAV (FFmpeg未検出)",
-                                  "⚠️ Audio: 16 kHz WAV fallback (No FFmpeg)")
-            ttk.Label(status_frame, text=status_text, foreground="#92400e", font=("Yu Gothic UI", 9)).pack(side="left")
-            ttk.Button(status_frame, text=self.tr("導入案内", "Setup Guide"),
-                       command=lambda: self.show_ffmpeg_guide(window)).pack(side="right")
-
-        ttk.Button(frame, text=self.tr("キャンセル", "Cancel"), command=window.destroy).pack(anchor="e", pady=(10, 0))
 
     def record(self):
         from tkinter import messagebox, simpledialog
@@ -375,6 +324,10 @@ class DesktopApp:
             self.process.stdin.write(json.dumps({"mode": mode, "path": path, "region": region, "settings": self.settings}) + "\n")
             self.process.stdin.flush()
             self.recording = mode in ("record", "record_audio", "record_audio_transcribe")
+            self.stop_button.configure(text=(
+                self.tr("録音を終了して文字起こし", "Finish audio & transcribe")
+                if mode == "record_audio_transcribe" else
+                self.tr("録画を終了して解析", "Finish recording & analyze")))
             self.paused = False
             self.status.set(self.tr("開始しています…", "Starting…"))
             process = self.process
@@ -437,7 +390,7 @@ class DesktopApp:
                 self.recording = False
                 self.pause_button.configure(state="disabled")
                 self.stop_button.configure(state="disabled")
-                if getattr(self, "current_mode", None) == "record_audio_transcribe":
+                if event.get("audio_only") or getattr(self, "current_mode", None) == "record_audio_transcribe":
                     consent_prompt = self.tr(
                         f"音声をGeminiへ送信します。画像は送信しません。\n"
                         f"上限: 音声{self.settings['max_audio_minutes']}分\n"

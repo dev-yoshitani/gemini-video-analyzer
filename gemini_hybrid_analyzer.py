@@ -187,9 +187,9 @@ def _validate_source_identity(source: Path, identity: dict[str, Any], language: 
     current = _source_identity(source)
     if current["size"] != identity.get("size") or current["mtime_ns"] != identity.get("mtime_ns"):
         raise RuntimeError(
-            "The source video changed after analysis began, so it cannot be resumed safely."
+            "The source media changed after analysis began, so it cannot be resumed safely."
             if language == "en"
-            else "元動画が解析開始後に変更されたため、安全に再開できません。"
+            else "元ファイルが解析開始後に変更されたため、安全に再開できません。"
         )
 
 
@@ -263,15 +263,18 @@ def _show_cloud_consent_dialog(language: str) -> bool | None:
         return None
 
 
-def _ask_cloud_consent(language: str = "ja") -> bool:
+def _ask_cloud_consent(language: str = "ja", *, audio_only: bool = False) -> bool:
     import workflow_control
     if workflow_control.active is not None:
-        return workflow_control.active.confirm(language=language)
+        return workflow_control.active.confirm(language=language, audio_only=audio_only)
     english = language == "en"
     print("\n" + "=" * 64)
     print("  High-Accuracy AI Analysis (Gemini)" if english else "  高精度AI解析モード（Gemini）")
     print("=" * 64)
-    if english:
+    if audio_only:
+        print("  Only PC audio is sent to Gemini; no images are captured or uploaded. API charges may apply."
+              if english else "  PC音声だけをGeminiへ送信します。画像の取得・送信は行いません。API料金が発生する場合があります。")
+    elif english:
         print("  The complete source video is not uploaded.")
         print("  Only these items are sent to the Gemini API:")
         print("  - Audio extracted locally from the video or recorded on this PC")
@@ -286,7 +289,7 @@ def _ask_cloud_consent(language: str = "ja") -> bool:
 
     # Start_EN.bat へのドラッグ&ドロップ時は、cmdの標準入力にフォーカスが
     # 当たらない環境があるため、WindowsのYes/Noダイアログを優先する。
-    if english:
+    if english and not audio_only:
         dialog_result = _show_cloud_consent_dialog(language)
         if dialog_result is not None:
             return dialog_result
@@ -832,6 +835,12 @@ def resume_analysis(
     saved_language = options.get("language")
     if saved_language in {"ja", "en"}:
         language = saved_language
+    if state.get("job_type") == "audio_transcribe":
+        return transcribe_audio_only(
+            source, output_dir=path.parent, require_consent=require_consent,
+            language=language,
+            max_audio_minutes=max_audio_minutes if max_audio_minutes is not None else int(options.get("max_audio_minutes", 120)),
+        )
     return analyze_with_gemini(
         source,
         audio_path=state.get("audio_path"),
@@ -850,6 +859,7 @@ def transcribe_audio_only(
     output_dir: str | os.PathLike[str] | None = None,
     language: str = "ja",
     max_audio_minutes: int = 120,
+    require_consent: bool = True,
 ) -> dict[str, Any]:
     """PC音声の文字起こしと議事録PDF生成（画像解析なし）。"""
     from timeline_analysis import transcribe_chunks
@@ -876,77 +886,89 @@ def transcribe_audio_only(
         destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
 
-    checkpoint()
-    api_key = _get_api_key(language)
-
-    from audio_compression import get_audio_duration, prepare_storage_audio
-
-    audio_duration = get_audio_duration(source_audio)
-    if audio_duration is None:
-        try:
-            with wave.open(os.fspath(source_audio), "rb") as audio_info:
-                audio_duration = audio_info.getnframes() / audio_info.getframerate()
-        except Exception:
-            audio_duration = 0.0
-
-    if audio_duration > max_audio_minutes * 60:
-        raise ValueError("音声時間が設定した上限を超えています / Audio exceeds the configured limit")
-
-    checkpoint()
-    notify(stage="文字起こし")
-    print("\nCreating a high-accuracy transcript with Gemini..." if english else "\nGeminiで高精度文字起こし中...")
+    state_path = destination / STATE_FILENAME
     chunks_dir = destination / "Transcript_Chunks"
-    transcript, timeline = transcribe_chunks(
-        source_audio,
-        api_key,
-        chunks_dir,
-        transcribe_with_gemini,
-        language=language,
-        max_audio_minutes=max_audio_minutes,
-    )
-    transcript = (transcript or "").strip()
-    if not transcript:
-        raise RuntimeError("Gemini returned an empty transcript." if english else "Geminiの文字起こし結果が空でした。")
+    transcript_path = destination / "Transcript_Progress.json"
+    resumed = state_path.is_file()
+    if resumed:
+        state = _read_json(state_path)
+        if state.get("job_type") != "audio_transcribe" or state["source"]["path"] != str(source_audio):
+            raise ValueError("Resume data belongs to a different source / 別の入力の再開データです")
+        _validate_source_identity(source_audio, state["source"], language)
+        if state["options"].get("language") != language:
+            raise ValueError("Resume using the saved language / 保存時の言語で再開してください")
+    else:
+        state = {"version": STATE_VERSION, "job_type": "audio_transcribe",
+                 "source": _source_identity(source_audio), "completed_stages": [],
+                 "options": {"language": language, "max_audio_minutes": max_audio_minutes},
+                 "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+    try:
+        _set_stage(state_path, state, "音声準備")
+        # This workflow records WAV. Validate duration before any Gemini request.
+        with wave.open(os.fspath(source_audio), "rb") as audio_info:
+            audio_duration = audio_info.getnframes() / audio_info.getframerate()
+        if audio_duration <= 0 or max_audio_minutes < 1:
+            raise ValueError("Audio is empty or the limit is invalid / 音声が空、または上限が不正です")
+        if audio_duration > max_audio_minutes * 60:
+            raise ValueError("Audio exceeds the configured limit / 音声時間が設定した上限を超えています")
+        notify(kind="plan", images=0, audio_minutes=round(audio_duration / 60, 2))
+        if require_consent and not _ask_cloud_consent(language, audio_only=True):
+            raise RuntimeError("Upload declined. Audio is saved locally; you can resume later."
+                               if english else "送信をキャンセルしました。音声はPCに保存済みです。後から再開できます。")
+        checkpoint()
+        api_key = _get_api_key(language)
+        _set_stage(state_path, state, "文字起こし")
+        if "文字起こし" in state["completed_stages"] and transcript_path.is_file():
+            transcript = _read_json(transcript_path)["text"]
+        else:
+            transcript, timeline = transcribe_chunks(
+                source_audio, api_key, chunks_dir, transcribe_with_gemini,
+                language=language, max_audio_minutes=max_audio_minutes,
+            )
+            transcript = (transcript or "").strip()
+            if not transcript:
+                raise RuntimeError("Gemini returned an empty transcript." if english else "Geminiの文字起こし結果が空でした。")
+            _write_json_atomic(transcript_path, {"text": transcript, "segments": timeline})
+            _set_stage(state_path, state, "文字起こし", completed=True, artifact=transcript_path)
 
-    transcript_path = destination / ("Transcript.txt" if english else "文字起こし.txt")
-    transcript_path.write_text(transcript + "\n", encoding="utf-8")
-
-    checkpoint()
-    notify(stage="PDF生成")
-    title = _safe_filename(
-        generate_title_from_text(transcript, api_key=api_key, language=language),
-        fallback="Audio Transcription" if english else "音声文字起こし",
-    )
-    pdf_path = destination / (
-        f"{title}_Transcription_Report.pdf" if english else f"{title}_文字起こしレポート.pdf"
-    )
-    _publish_pdf(
-        create_pdf,
-        pdf_path,
-        full_text=transcript,
-        timestamped_text="",
-        audio_filename=source_audio.name,
-        key_slides=None,
-        document_title=title,
-        language=language,
-    )
-
-    saved_storage_audio = prepare_storage_audio(source_audio, delete_source_on_success=True)
-
-    print(
-        f"\nAudio transcription complete.\nPDF: {pdf_path}"
-        if english
-        else f"\n音声の文字起こしが完了しました。\nPDF: {pdf_path}"
-    )
-
-    return {
-        "success": True,
-        "output_dir": os.fspath(destination),
-        "pdf": os.fspath(pdf_path),
-        "audio": os.fspath(saved_storage_audio),
-        "transcript_chars": len(transcript),
-        "mode": "audio_transcribe",
-    }
+        _set_stage(state_path, state, "PDF生成")
+        title = state.get("title")
+        if not title:
+            title = _safe_filename(
+                generate_title_from_text(transcript, api_key=api_key, language=language),
+                fallback="Audio Transcription" if english else "音声文字起こし",
+            )
+            state["title"] = title
+            _set_stage(state_path, state, "PDF生成")
+        pdf_path = destination / (
+            f"{title}_Transcription_Report.pdf" if english else f"{title}_文字起こしレポート.pdf"
+        )
+        _publish_pdf(
+            create_pdf, pdf_path, full_text=transcript, timestamped_text="",
+            audio_filename=("PC Audio.wav" if english else source_audio.name),
+            key_slides=None, document_title=title, language=language,
+        )
+        # The verified PDF must exist before compressing or removing source audio.
+        from audio_compression import prepare_storage_audio
+        saved_storage_audio = source_audio
+        try:
+            saved_storage_audio = prepare_storage_audio(source_audio, delete_source_on_success=True)
+        except OSError as exc:
+            print(f"Audio compression skipped / 音声圧縮を省略: {exc}")
+        result = {"success": True, "resumed": resumed, "output_dir": str(destination),
+                  "pdf": str(pdf_path), "audio": str(saved_storage_audio),
+                  "transcript_chars": len(transcript), "mode": "audio_transcribe"}
+        _remove_pending_job(destination)
+        _cleanup_completed_analysis(destination, pdf_path, transcript_path, chunks_dir, language=language)
+        print(f"\nAudio transcription complete.\nPDF: {pdf_path}" if english
+              else f"\n音声の文字起こしが完了しました。\nPDF: {pdf_path}")
+        return result
+    except (Exception, KeyboardInterrupt) as exc:
+        state["status"] = "interrupted"
+        state["last_error"] = str(exc) or exc.__class__.__name__
+        _write_json_atomic(state_path, state)
+        _register_pending_job(state_path, state)
+        raise
 
 
 

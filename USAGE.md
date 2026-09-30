@@ -6,15 +6,17 @@
 1. **初回準備**: 解凍したフォルダで `py -3 -m pip install -r requirements-app.txt` を実行します（Tkinterを含む標準的なWindows版Python 3.10以降が必要です）。
 2. **アプリの起動**: `Start.bat` をダブルクリックして操作画面を開きます。
    - **「● 録画する」**: 録画範囲（全画面・モニター・指定範囲）を選び、画面とPC内部音声を記録してAI解析・PDF作成を行います。
-   - **「🎙 録音する」**: 画面録画を行わずPC内部音声のみを記録します。「録音だけ保存（完全ローカル・API不要）」または「録音して文字起こし（音声＋PDF作成）」を選択できます。
+   - **「録音して文字起こし」**: PCで再生される音声だけを録音します。画面やマイクの記録、画像解析は行いません。音声を再生した状態で開始してください。3秒間の音声テスト後に録音が始まります。
    - **「動画を選ぶ」**: 保存済みの動画ファイルを選択してAI解析を行います。
 3. **一時停止と再開**: 録画・録音中は「一時停止／再開」ボタンで一時停止できます（一時停止中の内容は記録されません）。
-4. **終了と解析**: 「録画を終了して解析」を押すと記録を保存します。文字起こしを行う場合はクラウド送信の同意確認を経て解析を開始します（「いいえ」を選んだ場合、録音・録画データはPC内のみに保存されます）。
+4. **終了と解析**: 録音の場合は「録音を終了して文字起こし」、録画の場合は「録画を終了して解析」を押します。記録を保存してからクラウド送信の確認を表示します。「はい」で文字起こしを開始し、「いいえ」では記録をPC内に残します。録音の場合、送信するのは音声だけです。
 5. **結果の確認**: 「結果を見る」ボタンから、生成されたPDFレポートや保存先フォルダを直接開きます。
 
 > [!NOTE]
 > **APIキーの取り扱い**
-> 既存の環境変数または `.env` に設定されたAPIキーを優先して利用します。「録音だけ保存」ではAPIキーは不要です。文字起こし時に未設定で画面から入力したキーは、アプリ起動中のみメモリ内に保持され、設定ファイルや起動引数には保存されません。
+> 既存の環境変数または `.env` に設定されたAPIキーを優先して利用します。未設定で画面から入力したキーは、アプリ起動中のみメモリ内に保持され、設定ファイルや起動引数には保存されません。
+
+録音と文字起こしが完了すると、保存先の `録音_<日時>/` に音声（M4AまたはWAV）と、`文字起こし結果/` 内に `<タイトル>_文字起こしレポート.pdf` が残ります。中間データは正常終了後に削除します。送信のキャンセルや文字起こし・PDF生成の失敗時は、未完了一覧から再開できます。
 
 ### 解析と上限設定
 
@@ -41,9 +43,9 @@
 Open `Start_EN.bat` after installing `requirements-app.txt`. A standard Windows Python installation with Tk is required.
 
 - **Record** selects the capture area and records screen + PC audio.
-- **Record Audio** records PC playback audio only (no screen capture). Choose either "Save Audio Only" (completely local, no API key needed) or "Transcribe Audio" (audio + PDF report).
+- **Record audio & transcribe** records PC playback audio only, not the screen or microphone. Start playback for the 3-second audio test. No image analysis runs.
 - **Pause / Resume** pauses recording; paused content is not recorded.
-- **Finish** saves the media, then requests cloud-upload consent for transcription. Declining keeps the recording locally.
+- **Finish audio & transcribe** saves audio, then requests Gemini upload consent. Only audio is uploaded. Declining keeps audio locally and allows resuming later. Success keeps audio and a transcript PDF; intermediate files are removed. Transcription or PDF failures can resume without re-recording.
 - **Choose video** analyzes an existing file. **View results** opens the PDF or audio folder.
 
 - **Settings** controls the language, recording folder, image limit (default 30) and source-audio limit (default 120 minutes). Over-limit audio stops before upload; increase the limit and resume if desired.

@@ -963,9 +963,11 @@ def record_audio(
     started_at = time.monotonic()
     try:
         print(
-            "\n● Recording. Press Enter to stop."
-            if english
-            else "\n● 録音中です。停止するには Enter キーを押してください。"
+            ("\n● Recording. Choose Finish audio & transcribe to stop." if english
+             else "\n● 録音中です。「録音を終了して文字起こし」を押して停止してください。")
+            if control is not None else
+            ("\n● Recording. Press Enter to stop." if english
+             else "\n● 録音中です。停止するには Enter キーを押してください。")
         )
         if control is None:
             try:
@@ -1016,7 +1018,11 @@ def record_audio(
                     file=sys.stderr,
                 )
 
-    duration = time.monotonic() - started_at
+    # Paused time and driver shutdown time are not recorded audio.
+    duration = 0.0
+    if _is_usable_wav(audio_path):
+        with wave.open(os.fspath(audio_path), "rb") as saved:
+            duration = saved.getnframes() / saved.getframerate()
     if not audio_path.is_file():
         raise RuntimeError("The recording audio was not created." if english else "録音音声ファイルが作成されませんでした。")
     if duration < 0.5:

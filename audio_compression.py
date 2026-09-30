@@ -50,10 +50,13 @@ def find_ffmpeg() -> str | None:
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if local_app_data:
         winget_pattern = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
-        if winget_pattern.is_dir():
-            for exe in winget_pattern.glob("**/ffmpeg.exe"):
-                if exe.is_file():
-                    return str(exe)
+        try:
+            if winget_pattern.is_dir():
+                for exe in winget_pattern.glob("**/ffmpeg.exe"):
+                    if exe.is_file():
+                        return str(exe)
+        except OSError:
+            pass  # Optional package-manager folders may be inaccessible; use fallback.
 
     user_profile = os.environ.get("USERPROFILE", "")
     if user_profile:

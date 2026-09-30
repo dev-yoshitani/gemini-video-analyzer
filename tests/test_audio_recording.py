@@ -1,5 +1,6 @@
 """Tests for audio-only recording and transcription workflows."""
 import json
+import io
 import os
 import subprocess
 import tempfile
@@ -178,8 +179,9 @@ class AudioTranscriptionTests(unittest.TestCase):
                     return_value="Meeting Discussion",
                 ),
                 mock.patch("audio_transcriber.create_pdf", side_effect=fake_create_pdf) as mock_pdf,
+                mock.patch("audio_compression.prepare_storage_audio", side_effect=lambda source, **kw: source),
             ):
-                result = hybrid.transcribe_audio_only(audio_file, language="ja")
+                result = hybrid.transcribe_audio_only(audio_file, language="ja", require_consent=False)
 
             self.assertTrue(result["success"])
             self.assertEqual(result["mode"], "audio_transcribe")
@@ -192,6 +194,39 @@ class AudioTranscriptionTests(unittest.TestCase):
 
 
 class DesktopAppAudioModeTests(unittest.TestCase):
+    def test_audio_button_goes_directly_to_transcription(self):
+        app = mock.Mock()
+        app.busy.return_value = False
+        app.tr = lambda ja, en: ja
+        with mock.patch("tkinter.messagebox.askokcancel", return_value=True) as consent:
+            desktop_app.DesktopApp.record_audio_prompt(app)
+        app.start.assert_called_once_with("record_audio_transcribe")
+        self.assertIn("マイクは記録しません", consent.call_args.args[1])
+
+    def test_declining_recording_does_not_start_worker(self):
+        app = mock.Mock()
+        app.busy.return_value = False
+        app.tr = lambda ja, en: ja
+        with mock.patch("tkinter.messagebox.askokcancel", return_value=False):
+            desktop_app.DesktopApp.record_audio_prompt(app)
+        app.start.assert_not_called()
+
+    def test_worker_routes_audio_without_screen_capture(self):
+        job = {"mode": "record_audio_transcribe", "settings": desktop_app.DEFAULTS}
+        import workflow_control
+        with (
+            mock.patch("sys.stdin", io.StringIO(json.dumps(job) + "\n")),
+            mock.patch("sys.stdout", io.StringIO()),
+            mock.patch("threading.Thread"),
+            mock.patch.object(workflow_control, "active", None),
+            mock.patch.object(recorder, "record_audio", return_value={"audio": "PC音声.wav", "recording_dir": "recorded"}) as record,
+            mock.patch.object(recorder, "DesktopRecorder", side_effect=AssertionError("screen capture must not run")),
+            mock.patch.object(hybrid, "transcribe_audio_only", return_value={"success": True, "pdf": "report.pdf"}) as transcribe,
+        ):
+            self.assertEqual(desktop_app.run_worker(), 0)
+        self.assertFalse(record.call_args.kwargs["auto_compress_storage"])
+        transcribe.assert_called_once_with("PC音声.wav", language="ja", max_audio_minutes=120)
+
     def test_start_record_audio_bypasses_api_key_prompt(self):
         dummy_app = mock.Mock()
         dummy_app.busy.return_value = False
@@ -264,4 +299,89 @@ class DesktopAppAudioModeTests(unittest.TestCase):
                 desktop_app.DesktopApp.refresh_pending(dummy_app)
 
             self.assertTrue(any("録音を復旧" in job[2] for job in dummy_app.jobs))
+
+
+class AudioResumeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = _create_dummy_wav(self.root / "PC音声.wav", 5)
+        self.jobs = self.root / "pending"
+        patch = mock.patch.object(hybrid, "_pending_jobs_dir", return_value=self.jobs)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    @staticmethod
+    def pdf(output_filepath, **kwargs):
+        Path(output_filepath).write_bytes(b"%PDF-1.4\n%%EOF\n")
+        return output_filepath
+
+    def test_upload_declined_preserves_audio_and_pending_job_without_api(self):
+        with mock.patch.object(hybrid, "_ask_cloud_consent", return_value=False) as consent, mock.patch.object(hybrid, "_get_api_key") as key:
+            with self.assertRaisesRegex(RuntimeError, "送信をキャンセル"):
+                hybrid.transcribe_audio_only(self.source)
+        key.assert_not_called()
+        consent.assert_called_once_with("ja", audio_only=True)
+        self.assertTrue(self.source.is_file())
+        self.assertEqual(len(hybrid.list_pending_analyses()), 1)
+
+    def test_audio_limit_checked_before_consent_or_api(self):
+        _create_dummy_wav(self.source, 61)
+        with mock.patch.object(hybrid, "_ask_cloud_consent") as consent, mock.patch.object(hybrid, "_get_api_key") as key:
+            with self.assertRaisesRegex(ValueError, "上限"):
+                hybrid.transcribe_audio_only(self.source, max_audio_minutes=1)
+        consent.assert_not_called()
+        key.assert_not_called()
+        self.assertTrue(self.source.exists())
+
+    def test_pdf_failure_resumes_without_retranscription_or_images(self):
+        with (
+            mock.patch.object(hybrid, "_get_api_key", return_value="fake"),
+            mock.patch("timeline_analysis.transcribe_chunks", return_value=("テスト発言です。", [])) as chunks,
+            mock.patch("audio_transcriber.generate_title_from_text", return_value="会議") as title,
+            mock.patch("audio_transcriber.create_pdf", side_effect=[RuntimeError("PDF failed"), None]) as pdf,
+            mock.patch("audio_compression.prepare_storage_audio", side_effect=lambda source, **kw: source),
+            mock.patch("key_slide_extractor.KeySlideExtractor", side_effect=AssertionError("no images")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "PDF"):
+                hybrid.transcribe_audio_only(self.source, require_consent=False)
+            job = hybrid.list_pending_analyses()[0]
+            self.assertTrue(self.source.is_file())
+            pdf.side_effect = self.pdf
+            result = hybrid.resume_analysis(job["state_path"], require_consent=False, language="en")
+        self.assertTrue(result["resumed"])
+        self.assertEqual(chunks.call_count, 1)
+        self.assertEqual(title.call_count, 1)
+        self.assertEqual(list(Path(result["output_dir"]).iterdir()), [Path(result["pdf"])])
+        self.assertEqual(hybrid.list_pending_analyses(), [])
+        self.assertTrue(self.source.is_file())
+
+    def test_resume_retries_only_failed_audio_chunk(self):
+        _create_dummy_wav(self.source, 65)
+        first = [{"start": 0, "end": 1, "text": "最初の発言"}]
+        second = [{"start": 0, "end": 1, "text": "続きの発言"}]
+        with (
+            mock.patch.object(hybrid, "_get_api_key", return_value="fake"),
+            mock.patch("audio_transcriber.transcribe_with_gemini", side_effect=[("最初の発言", first), RuntimeError("offline")]) as transcribe,
+            mock.patch("audio_transcriber.generate_title_from_text", return_value="会議"),
+            mock.patch("audio_transcriber.create_pdf", side_effect=self.pdf),
+            mock.patch("audio_compression.prepare_storage_audio", side_effect=lambda source, **kw: source),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "offline"):
+                hybrid.transcribe_audio_only(self.source, require_consent=False)
+            transcribe.reset_mock()
+            transcribe.side_effect = None
+            transcribe.return_value = ("続きの発言", second)
+            result = hybrid.resume_analysis(hybrid.list_pending_analyses()[0]["state_path"], require_consent=False)
+        transcribe.assert_called_once()
+        self.assertTrue(Path(result["pdf"]).exists())
+
+    def test_audio_consent_event_describes_no_images(self):
+        import workflow_control
+        control = mock.Mock()
+        control.confirm.return_value = True
+        with mock.patch.object(workflow_control, "active", control):
+            self.assertTrue(hybrid._ask_cloud_consent("en", audio_only=True))
+        control.confirm.assert_called_once_with(language="en", audio_only=True)
 

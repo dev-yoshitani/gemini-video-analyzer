@@ -266,11 +266,27 @@ class DesktopTests(unittest.TestCase):
         try:
             root.withdraw()
             with mock.patch.object(desktop_app.DesktopApp, "refresh_pending"):
-                app = desktop_app.DesktopApp(root, "en")
-                root.update_idletasks()
-                self.assertEqual(app.status.get(), "Ready")
-                self.assertFalse(app.busy())
-                self.assertEqual(str(app.stop_button["state"]), "disabled")
+                for language, ready, button, stop in (
+                        ("ja", "準備完了", "録音して文字起こし", "録音を終了して文字起こし"),
+                        ("en", "Ready", "Record audio & transcribe", "Finish audio & transcribe")):
+                    app = desktop_app.DesktopApp(root, language)
+                    root.update_idletasks()
+                    self.assertEqual(app.status.get(), ready)
+                    self.assertFalse(app.busy())
+                    self.assertEqual(str(app.stop_button["state"]), "disabled")
+                    texts = []
+                    def collect(widget):
+                        if widget.winfo_class() == "TButton":
+                            texts.append(str(widget["text"]))
+                        for child in widget.winfo_children():
+                            collect(child)
+                    collect(root)
+                    self.assertIn(button, texts)
+                    self.assertFalse(any("録音だけ保存" in t or "Save Audio Only" in t for t in texts))
+                    app.api_key = "fake-test-key"
+                    with mock.patch("subprocess.Popen"), mock.patch("threading.Thread"):
+                        app.start("record_audio_transcribe")
+                    self.assertEqual(str(app.stop_button["text"]), stop)
         finally:
             root.destroy()
 

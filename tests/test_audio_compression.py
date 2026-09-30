@@ -23,6 +23,15 @@ def _generate_test_wav(path: Path, duration_sec: float = 3.0, rate: int = 48000,
 
 
 class AudioCompressionEstimationTests(unittest.TestCase):
+    def test_inaccessible_optional_ffmpeg_directory_does_not_break_fallback(self):
+        with (
+            mock.patch.dict(os.environ, {"LOCALAPPDATA": "C:/inaccessible", "FFMPEG_PATH": "", "FFMPEG_BINARY": ""}),
+            mock.patch.object(Path, "is_file", return_value=False),
+            mock.patch.object(Path, "is_dir", side_effect=PermissionError("denied")),
+            mock.patch.object(comp.shutil, "which", return_value=None),
+        ):
+            self.assertIsNone(comp.find_ffmpeg())
+
     def test_estimated_sizes_match_target_bitrates(self):
         one_hour_seconds = 3600
 

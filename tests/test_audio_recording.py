@@ -1,9 +1,12 @@
 """Tests for audio-only recording and transcription workflows."""
 import json
 import io
+import queue
 import os
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -65,13 +68,16 @@ class AudioRecordingCoreTests(unittest.TestCase):
                 return val
 
             with (
-                mock.patch.object(recorder, "test_pc_audio", return_value=("Mock Loopback", 0.3)),
+                mock.patch.object(recorder, "test_pc_audio", side_effect=AssertionError("No preflight should run")) as preflight,
                 mock.patch.object(recorder, "SystemAudioRecorder", side_effect=init_fake),
                 mock.patch.object(recorder.time, "monotonic", side_effect=fake_clock),
             ):
                 result = recorder.record_audio(output_root, language="ja", control=control)
 
             self.assertTrue(result["success"])
+            preflight.assert_not_called()
+            fake_audio.start.assert_called_once()
+            self.assertEqual(list(Path(result["recording_dir"]).glob("*テスト*")), [])
             self.assertEqual(result["mode"], "audio_only")
             self.assertIn("audio", result)
             self.assertIn("recording_dir", result)
@@ -106,15 +112,37 @@ class AudioRecordingCoreTests(unittest.TestCase):
             output_root = Path(temp_dir)
             control = JobControl(lambda **ev: None)
 
-            with mock.patch.object(
-                recorder, "test_pc_audio", side_effect=RuntimeError("PC音声の録音デバイスが見つかりません")
-            ):
+            fake_audio, init_fake = self._setup_fake_audio(output_root)
+            fake_audio.start.side_effect = RuntimeError("PC音声の録音デバイスが見つかりません")
+            with mock.patch.object(recorder, "SystemAudioRecorder", side_effect=init_fake):
                 with self.assertRaisesRegex(RuntimeError, "録音デバイスが見つかりません"):
                     recorder.record_audio(output_root, language="ja", control=control)
 
             # Check that no stray recording directory is left behind
             subdirs = list(output_root.iterdir())
             self.assertEqual(len(subdirs), 0)
+
+    def test_record_audio_reports_no_received_audio_instead_of_file_missing(self):
+        for language, message in (("ja", "音声データを受信できません"), ("en", "No audio data")):
+            with self.subTest(language=language), tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
+                fake_audio, init_fake = self._setup_fake_audio(Path(temporary))
+                fake_audio.stop.side_effect = None
+                fake_audio.stop.return_value = False
+                control = JobControl(lambda **ev: None)
+                control.stop.set()
+                with mock.patch.object(recorder, "SystemAudioRecorder", side_effect=init_fake):
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        recorder.record_audio(Path(temporary), language=language, control=control)
+
+    def test_record_audio_keeps_original_stop_error_when_no_audio_was_saved(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
+            fake_audio, init_fake = self._setup_fake_audio(Path(temporary))
+            fake_audio.stop.side_effect = RuntimeError("driver shutdown failed")
+            control = JobControl(lambda **ev: None)
+            control.stop.set()
+            with mock.patch.object(recorder, "SystemAudioRecorder", side_effect=init_fake):
+                with self.assertRaisesRegex(RuntimeError, "driver shutdown failed"):
+                    recorder.record_audio(Path(temporary), control=control)
 
     def test_record_audio_emits_pause_and_recording_events(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
@@ -145,7 +173,7 @@ class AudioRecordingCoreTests(unittest.TestCase):
                 return val
 
             with (
-                mock.patch.object(recorder, "test_pc_audio", return_value=("Mock Loopback", 0.5)),
+                mock.patch.object(recorder, "test_pc_audio", side_effect=AssertionError("No preflight should run")),
                 mock.patch.object(recorder, "SystemAudioRecorder", side_effect=init_fake),
                 mock.patch.object(recorder.time, "monotonic", side_effect=fake_clock),
             ):
@@ -171,7 +199,7 @@ class AudioTranscriptionTests(unittest.TestCase):
             with (
                 mock.patch.object(hybrid, "_get_api_key", return_value="fake-api-key"),
                 mock.patch(
-                    "timeline_analysis.transcribe_chunks",
+                    "timeline_analysis.transcribe_whole",
                     return_value=("This is a test transcript of PC audio.", []),
                 ),
                 mock.patch(
@@ -194,9 +222,49 @@ class AudioTranscriptionTests(unittest.TestCase):
 
 
 class DesktopAppAudioModeTests(unittest.TestCase):
+    def _poll_app(self):
+        app = desktop_app.DesktopApp.__new__(desktop_app.DesktopApp)
+        app.events = queue.Queue()
+        app.process = mock.Mock()
+        app.workers = {app.process: desktop_app.WorkerJob(1, "record_audio_transcribe", desktop_app.DEFAULTS.copy(), capturing=True)}
+        app.api_key = None
+        app.finishing = False
+        app.settings = desktop_app.DEFAULTS.copy()
+        app.status = mock.Mock()
+        app.progress = {}
+        app.pause_button = mock.Mock()
+        app.stop_button = mock.Mock()
+        app.root = mock.Mock()
+        app.refresh_pending = mock.Mock()
+        app.update_worker_list = mock.Mock()
+        return app
+
+    def test_previous_worker_exit_cannot_disable_current_recording(self):
+        app = self._poll_app()
+        app.events.put((object(), None))
+        desktop_app.DesktopApp.poll(app)
+        app.stop_button.configure.assert_not_called()
+        app.refresh_pending.assert_not_called()
+
+    def test_queued_recording_notification_does_not_reenable_stop_after_click(self):
+        app = self._poll_app()
+        app.finishing = True
+        app.events.put((app.process, desktop_app.EVENT_PREFIX + json.dumps({
+            "kind": "recording", "seconds": 1, "level": 0, "paused": False, "silent": False})))
+        desktop_app.DesktopApp.poll(app)
+        app.stop_button.configure.assert_not_called()
+
+    def test_worker_failure_immediately_disables_recording_controls(self):
+        app = self._poll_app()
+        app.events.put((app.process, desktop_app.EVENT_PREFIX + json.dumps({"kind": "error", "message": "startup failed"})))
+        with mock.patch("tkinter.messagebox.showerror"):
+            desktop_app.DesktopApp.poll(app)
+        self.assertFalse(app.recording)
+        app.stop_button.configure.assert_called_once_with(state="disabled")
+
     def test_audio_button_goes_directly_to_transcription(self):
         app = mock.Mock()
-        app.busy.return_value = False
+        app.recording_busy.return_value = False
         app.tr = lambda ja, en: ja
         with mock.patch("tkinter.messagebox.askokcancel", return_value=True) as consent:
             desktop_app.DesktopApp.record_audio_prompt(app)
@@ -205,7 +273,7 @@ class DesktopAppAudioModeTests(unittest.TestCase):
 
     def test_declining_recording_does_not_start_worker(self):
         app = mock.Mock()
-        app.busy.return_value = False
+        app.recording_busy.return_value = False
         app.tr = lambda ja, en: ja
         with mock.patch("tkinter.messagebox.askokcancel", return_value=False):
             desktop_app.DesktopApp.record_audio_prompt(app)
@@ -230,6 +298,10 @@ class DesktopAppAudioModeTests(unittest.TestCase):
     def test_start_record_audio_bypasses_api_key_prompt(self):
         dummy_app = mock.Mock()
         dummy_app.busy.return_value = False
+        dummy_app.recording_busy.return_value = False
+        dummy_app.workers = {}
+        dummy_app.worker_number = 0
+        dummy_app.progress = {}
         dummy_app.api_key = ""
         dummy_app.settings = desktop_app.DEFAULTS
         dummy_app.status = mock.Mock()
@@ -301,6 +373,119 @@ class DesktopAppAudioModeTests(unittest.TestCase):
             self.assertTrue(any("録音を復旧" in job[2] for job in dummy_app.jobs))
 
 
+class WorkerInitializationTests(unittest.TestCase):
+    def test_missing_numpy_is_reported_before_command_reader_starts(self):
+        import builtins
+        import workflow_control
+
+        original_import = builtins.__import__
+
+        def checked_import(name, *args, **kwargs):
+            if name == "numpy":
+                raise ImportError("NumPy unavailable")
+            return original_import(name, *args, **kwargs)
+
+        job = {"mode": "record_audio_transcribe", "settings": desktop_app.DEFAULTS}
+        output = io.StringIO()
+        with (
+            mock.patch("sys.stdin", io.StringIO(json.dumps(job) + "\n")),
+            mock.patch("sys.stdout", output),
+            mock.patch("builtins.__import__", side_effect=checked_import),
+            mock.patch("threading.Thread") as thread,
+            mock.patch.object(workflow_control, "active", None),
+        ):
+            self.assertEqual(desktop_app.run_worker(), 1)
+        thread.assert_not_called()
+        self.assertIn('"kind": "error"', output.getvalue())
+        self.assertIn("NumPy unavailable", output.getvalue())
+
+    def test_cold_worker_initializes_while_command_pipe_stays_open(self):
+        # A fresh process matters: this test process already imported NumPy.
+        # Only media/API entry points are replaced; no capture or network runs.
+        child = r'''
+import sys
+from types import ModuleType
+import desktop_app
+
+recorder = ModuleType("local_screen_recorder")
+def record_audio(*args, control=None, **kwargs):
+    import numpy
+    control.emit(kind="recording", seconds=0, level=0, paused=False, silent=False)
+    if not control.stop.wait(10):
+        raise RuntimeError("Stop command was not received")
+    return {"audio": "synthetic.wav", "recording_dir": "synthetic"}
+recorder.record_audio = record_audio
+sys.modules["local_screen_recorder"] = recorder
+
+hybrid = ModuleType("gemini_hybrid_analyzer")
+def forbidden(*args, **kwargs):
+    raise AssertionError("No video capture or live API call is allowed")
+hybrid.analyze_with_gemini = hybrid.resume_analysis = forbidden
+hybrid.transcribe_audio_only = lambda *args, **kwargs: {"success": True}
+sys.modules["gemini_hybrid_analyzer"] = hybrid
+raise SystemExit(desktop_app.run_worker())
+'''
+        process = subprocess.Popen(
+            [str(Path(desktop_app.sys.executable).with_name("python.exe"))
+             if os.name == "nt" else desktop_app.sys.executable, "-u", "-c", child],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", cwd=Path(desktop_app.__file__).parent,
+            env=dict(os.environ, PYTHONUTF8="1", PYTHONUNBUFFERED="1"),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        lines = queue.Queue()
+
+        def read():
+            for line in process.stdout:
+                lines.put(line)
+            lines.put(None)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        received = []
+
+        def wait_event(kind, timeout):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    line = lines.get(timeout=min(.2, max(.01, deadline - time.monotonic())))
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                received.append(line)
+                if line.startswith(desktop_app.EVENT_PREFIX):
+                    event = json.loads(line[len(desktop_app.EVENT_PREFIX):])
+                    if event.get("kind") == kind:
+                        return event
+            self.fail(f"Worker did not emit {kind} with stdin open: {''.join(received)}")
+
+        try:
+            job = {"mode": "record_audio_transcribe", "settings": desktop_app.DEFAULTS}
+            process.stdin.write(json.dumps(job) + "\n")
+            process.stdin.flush()
+            # No command or EOF may wake the stdin reader before readiness.
+            wait_event("recording", 20)
+            process.stdin.write('{"command": "stop"}\n')
+            process.stdin.flush()
+            self.assertTrue(wait_event("complete", 10)["result"]["success"])
+            try:
+                process.stdin.close()
+            except OSError:
+                pass  # The worker may have exited immediately after complete.
+            self.assertEqual(process.wait(timeout=5), 0)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+            reader.join(timeout=2)
+            process.stdout.close()
+
+
 class AudioResumeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
@@ -335,10 +520,28 @@ class AudioResumeTests(unittest.TestCase):
         key.assert_not_called()
         self.assertTrue(self.source.exists())
 
+    def test_long_recording_uses_one_full_audio_request(self):
+        _create_dummy_wav(self.source, 900)
+        with (
+            mock.patch.object(hybrid, "_get_api_key", return_value="fake"),
+            mock.patch.object(hybrid, "_ask_cloud_consent", return_value=True) as consent,
+            mock.patch("audio_transcriber.transcribe_with_gemini", return_value=(
+                "全体の発言", [{"start": 0, "end": 900, "text": "全体の発言"}])) as transcribe,
+            mock.patch("audio_transcriber.generate_title_from_text", return_value="会議"),
+            mock.patch("audio_transcriber.create_pdf", side_effect=self.pdf),
+            mock.patch("audio_compression.prepare_storage_audio", side_effect=lambda source, **kw: source),
+        ):
+            result = hybrid.transcribe_audio_only(self.source)
+        consent.assert_called_once_with("ja", audio_only=True)
+        transcribe.assert_called_once_with(str(self.source), "fake", language="ja",
+                                           timestamps=False, duration_seconds=900)
+        self.assertTrue(Path(result["pdf"]).is_file())
+        self.assertFalse((Path(result["output_dir"]) / "Transcript_Chunks").exists())
+
     def test_pdf_failure_resumes_without_retranscription_or_images(self):
         with (
             mock.patch.object(hybrid, "_get_api_key", return_value="fake"),
-            mock.patch("timeline_analysis.transcribe_chunks", return_value=("テスト発言です。", [])) as chunks,
+            mock.patch("timeline_analysis.transcribe_whole", return_value=("テスト発言です。", [])) as whole,
             mock.patch("audio_transcriber.generate_title_from_text", return_value="会議") as title,
             mock.patch("audio_transcriber.create_pdf", side_effect=[RuntimeError("PDF failed"), None]) as pdf,
             mock.patch("audio_compression.prepare_storage_audio", side_effect=lambda source, **kw: source),
@@ -351,19 +554,18 @@ class AudioResumeTests(unittest.TestCase):
             pdf.side_effect = self.pdf
             result = hybrid.resume_analysis(job["state_path"], require_consent=False, language="en")
         self.assertTrue(result["resumed"])
-        self.assertEqual(chunks.call_count, 1)
+        self.assertEqual(whole.call_count, 1)
         self.assertEqual(title.call_count, 1)
         self.assertEqual(list(Path(result["output_dir"]).iterdir()), [Path(result["pdf"])])
         self.assertEqual(hybrid.list_pending_analyses(), [])
         self.assertTrue(self.source.is_file())
 
-    def test_resume_retries_only_failed_audio_chunk(self):
+    def test_resume_retries_failed_whole_audio_without_splitting(self):
         _create_dummy_wav(self.source, 65)
-        first = [{"start": 0, "end": 1, "text": "最初の発言"}]
         second = [{"start": 0, "end": 1, "text": "続きの発言"}]
         with (
             mock.patch.object(hybrid, "_get_api_key", return_value="fake"),
-            mock.patch("audio_transcriber.transcribe_with_gemini", side_effect=[("最初の発言", first), RuntimeError("offline")]) as transcribe,
+            mock.patch("audio_transcriber.transcribe_with_gemini", side_effect=RuntimeError("offline")) as transcribe,
             mock.patch("audio_transcriber.generate_title_from_text", return_value="会議"),
             mock.patch("audio_transcriber.create_pdf", side_effect=self.pdf),
             mock.patch("audio_compression.prepare_storage_audio", side_effect=lambda source, **kw: source),
@@ -375,6 +577,8 @@ class AudioResumeTests(unittest.TestCase):
             transcribe.return_value = ("続きの発言", second)
             result = hybrid.resume_analysis(hybrid.list_pending_analyses()[0]["state_path"], require_consent=False)
         transcribe.assert_called_once()
+        self.assertEqual(transcribe.call_args.args[0], str(self.source))
+        self.assertEqual(transcribe.call_args.kwargs["duration_seconds"], 65)
         self.assertTrue(Path(result["pdf"]).exists())
 
     def test_audio_consent_event_describes_no_images(self):

@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import ctypes
 import datetime as dt
+from fractions import Fraction
 import os
+import queue
 import sys
 import threading
 import time
@@ -429,6 +431,7 @@ class SystemAudioRecorder:
     """Windows WASAPIループバックでPCから再生される音をWAVへ保存する。"""
 
     chunk_size = 1024
+    storage_rate = 16000
 
     def __init__(self, output_path: Path, language: str = "ja", segment_seconds=60, pause_event=None):
         self.output_path = output_path
@@ -448,6 +451,10 @@ class SystemAudioRecorder:
         self.peak_level = 0.0
         self.device_name = ""
         self.language = "en" if language == "en" else "ja"
+        self.audio_queue = queue.Queue(maxsize=256)
+        self.callback_lock = threading.Lock()
+        self._resampler = None
+        self._capture_frames = 0
 
     def _find_loopback_device(self) -> dict[str, Any]:
         import pyaudiowpatch as pyaudio
@@ -487,7 +494,33 @@ class SystemAudioRecorder:
         rate = int(device.get("defaultSampleRate", 48000))
         channels = max(1, int(device.get("maxInputChannels", 2)))
         self.device_name = str(device.get("name", "WASAPI loopback"))
+        self.stop_event.clear()
+        self.error = None
+        self.bytes_written = 0
+        self.peak_level = 0.0
+        self.current_level = 0.0
+        self.last_sound_at = time.monotonic()
+        self.audio_queue = queue.Queue(maxsize=256)
+        self._callback_continue = pyaudio.paContinue
+        self._callback_complete = pyaudio.paComplete
+        self._callback_abort = pyaudio.paAbort
+        self._input_overflow = pyaudio.paInputOverflow
         try:
+            # WASAPI must use the playback device's native format. Reduce the
+            # saved format in the writer, not in the driver or callback.
+            self.capture_rate, self.capture_channels = rate, channels
+            self.rate, self.channels = min(rate, self.storage_rate), 1
+            self._capture_frames = 0
+            self._resampler = None
+            if self.rate != self.capture_rate:
+                import av
+                self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.rate)
+            self.parts_dir.mkdir(parents=True, exist_ok=True)
+            self.chunk_path = self.parts_dir / "audio_00000.wav"
+            self.wave_file = wave.open(os.fspath(self.chunk_path), "wb")
+            self.wave_file.setnchannels(self.channels)
+            self.wave_file.setsampwidth(2)
+            self.wave_file.setframerate(self.rate)
             self.stream = self.pa.open(
                 format=pyaudio.paInt16,
                 channels=channels,
@@ -495,38 +528,110 @@ class SystemAudioRecorder:
                 input=True,
                 input_device_index=device["index"],
                 frames_per_buffer=self.chunk_size,
+                stream_callback=self._audio_callback,
+                start=False,
             )
-            self.rate, self.channels = rate, channels
-            self.parts_dir.mkdir(parents=True, exist_ok=True)
-            self.chunk_path = self.parts_dir / "audio_00000.wav"
-            self.wave_file = wave.open(os.fspath(self.chunk_path), "wb")
-            self.wave_file.setnchannels(channels)
-            self.wave_file.setsampwidth(2)
-            self.wave_file.setframerate(rate)
+            self.thread = threading.Thread(target=self._worker, daemon=True)
+            self.thread.start()
+            self.stream.start_stream()
         except Exception:
+            self.stop_event.set()
+            if self.thread is not None:
+                self.thread.join(timeout=5)
             self.close()
+            if self.bytes_written == 0 and (self.thread is None or not self.thread.is_alive()):
+                try:
+                    self.chunk_path.unlink(missing_ok=True)
+                    self.parts_dir.rmdir()
+                except (OSError, AttributeError):
+                    pass
             raise
-
-        self.stop_event.clear()
-        self.error = None
-        self.bytes_written = 0
-        self.peak_level = 0.0
-        self.thread = threading.Thread(target=self._worker, daemon=True)
-        self.thread.start()
+        print(
+            f"Audio quality: {self.rate} Hz / mono / 16-bit (lightweight)"
+            if self.language == "en" else
+            f"録音品質: {self.rate} Hz・モノラル・16bit（軽量）"
+        )
         return self.output_path
+
+    def _storage_audio(self, data: bytes) -> bytes:
+        """Streaming, anti-aliased conversion; resampler state spans all chunks."""
+        samples = np.frombuffer(data, dtype="<i2")
+        channels = getattr(self, "capture_channels", self.channels)
+        if samples.size % channels:
+            raise ValueError("Invalid audio frame size / 音声データのフレーム長が不正です")
+        if channels > 1:
+            # Widen before mixing to prevent int16 overflow/clipping.
+            samples = np.rint(samples.reshape(-1, channels).astype(np.int32).mean(axis=1)).astype("<i2")
+        if not samples.size:
+            return b""
+        if self._resampler is None:
+            return samples.tobytes()
+        import av
+        frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format="s16", layout="mono")
+        frame.sample_rate = self.capture_rate
+        frame.time_base = Fraction(1, self.capture_rate)
+        frame.pts = self._capture_frames
+        self._capture_frames += samples.size
+        return b"".join(converted.to_ndarray().tobytes() for converted in self._resampler.resample(frame))
+
+    def _audio_callback(self, data, frame_count, time_info, status):
+        """Keep the PortAudio callback nonblocking; only the worker owns WAV files."""
+        with self.callback_lock:
+            return self._enqueue_audio(data, status)
+
+    def _enqueue_audio(self, data, status):
+        if self.stop_event.is_set():
+            return None, self._callback_complete
+        try:
+            if status & self._input_overflow:
+                raise RuntimeError(
+                    "The audio device lost samples (input overflow)."
+                    if self.language == "en" else "音声デバイスで音声データの取りこぼしが発生しました。"
+                )
+            # Evaluate pause when the audio arrives, not when queued data is saved.
+            if self.pause_event.is_set():
+                self.current_level = 0.0
+            elif data:
+                self.audio_queue.put_nowait(data)
+        except Exception as exc:
+            self.error = (
+                RuntimeError("Audio saving could not keep up." if self.language == "en"
+                             else "音声の保存が追いつかず、録音を停止しました。")
+                if isinstance(exc, queue.Full) else exc
+            )
+            self.stop_event.set()
+            return None, self._callback_abort
+        return None, self._callback_continue
 
     def _worker(self) -> None:
         from recording_recovery import save_parts
         chunk_bytes = 0
+
+        def save_audio(data):
+            nonlocal chunk_bytes
+            if not data:
+                return
+            self.wave_file.writeframesraw(data)
+            self.bytes_written += len(data)
+            chunk_bytes += len(data)
+            if hasattr(self, "rate") and chunk_bytes >= self.segment_seconds * self.rate * self.channels * 2:
+                self.wave_file.close()
+                self.parts.append(self.chunk_path)
+                save_parts(self.parts_dir, "audio", self.parts)
+                self.chunk_path = self.parts_dir / f"audio_{len(self.parts):05d}.wav"
+                self.wave_file = wave.open(os.fspath(self.chunk_path), "wb")
+                self.wave_file.setnchannels(self.channels)
+                self.wave_file.setsampwidth(2)
+                self.wave_file.setframerate(self.rate)
+                chunk_bytes = 0
+
         try:
-            while not self.stop_event.is_set():
-                data = self.stream.read(self.chunk_size, exception_on_overflow=False)
-                if self.pause_event.is_set():
-                    self.current_level = 0.0
+            # Drain already received audio even after Finish is pressed.
+            while not self.stop_event.is_set() or not self.audio_queue.empty():
+                try:
+                    data = self.audio_queue.get(timeout=0.1)
+                except queue.Empty:
                     continue
-                self.wave_file.writeframesraw(data)
-                self.bytes_written += len(data)
-                chunk_bytes += len(data)
                 samples = np.frombuffer(data, dtype=np.int16)
                 if samples.size:
                     peak = float(np.max(np.abs(samples.astype(np.int32)))) / 32768.0
@@ -534,39 +639,37 @@ class SystemAudioRecorder:
                     self.current_level = peak
                     if peak >= 0.001:
                         self.last_sound_at = time.monotonic()
-                if hasattr(self, "rate") and chunk_bytes >= self.segment_seconds * self.rate * self.channels * 2:
-                    self.wave_file.close()
-                    self.parts.append(self.chunk_path)
-                    chunk_bytes = 0
-                    save_parts(self.parts_dir, "audio", self.parts)
-                    self.chunk_path = self.parts_dir / f"audio_{len(self.parts):05d}.wav"
-                    self.wave_file = wave.open(os.fspath(self.chunk_path), "wb")
-                    self.wave_file.setnchannels(self.channels)
-                    self.wave_file.setsampwidth(2)
-                    self.wave_file.setframerate(self.rate)
-                    chunk_bytes = 0
+                save_audio(self._storage_audio(data))
+            # Include the filter's remaining samples after draining queued input.
+            if self._resampler is not None and self._capture_frames:
+                for converted in self._resampler.resample(None):
+                    save_audio(converted.to_ndarray().tobytes())
         except Exception as exc:
-            if not self.stop_event.is_set():
-                self.error = exc
+            self.error = exc
+            self.stop_event.set()
         finally:
             if hasattr(self, "chunk_path") and self.wave_file is not None:
-                self.wave_file.close()
-                self.wave_file = None
-                if chunk_bytes:
-                    self.parts.append(self.chunk_path)
-                    save_parts(self.parts_dir, "audio", self.parts)
+                try:
+                    self.wave_file.close()
+                    if chunk_bytes:
+                        self.parts.append(self.chunk_path)
+                        save_parts(self.parts_dir, "audio", self.parts)
+                except Exception as exc:
+                    self.error = exc
+                    self.stop_event.set()
+                finally:
+                    self.wave_file = None
 
     def stop(self) -> bool:
-        self.stop_event.set()
-        # WASAPI の read() が待機中だと、先に join() しても録音スレッドは
-        # 終了できない。まずストリームを停止して read() を解除してから待つ。
+        with self.callback_lock:
+            self.stop_event.set()
+        # Stop callbacks first; the worker can finish without waiting on a driver read.
         if self.stream is not None:
             _bounded_driver_call(self.stream.stop_stream)
         if self.thread is not None:
             self.thread.join(timeout=5)
         if self.thread is not None and self.thread.is_alive():
-            # 一部の音声ドライバーは stop_stream() だけでは解除されないため、
-            # ストリームを閉じてもう一度だけ終了を待つ。
+            # Driver shutdown and slow disk writes both remain bounded.
             if self.stream is not None:
                 _bounded_driver_call(self.stream.close)
             self.thread.join(timeout=2)
@@ -673,7 +776,7 @@ def record_and_analyze(
     _require_recording_dependencies(language)
     session_name = (
         "Recording_" if english else "録画_"
-    ) + dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    ) + dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
     session_dir = output_root.expanduser().resolve() / session_name
     session_dir.mkdir(parents=True, exist_ok=False)
 
@@ -720,31 +823,13 @@ def record_and_analyze(
         if control is None:
             input(
                 "Start playing a video or music on the PC, then press Enter. "
-                "Recording will begin after a 3-second audio test..."
+                "Recording will begin immediately..."
                 if english
                 else "PCで動画や音楽を再生した状態にして、"
-                "Enterキーを押してください（3秒間の音声テスト後に録画開始）..."
+                "Enterキーを押すとすぐに録画を開始します..."
             )
     except (KeyboardInterrupt, EOFError) as exc:
         raise RuntimeError("Recording was cancelled." if english else "録画をキャンセルしました。") from exc
-
-    print("\nTesting PC audio for 3 seconds..." if english else "\nPC音声を3秒間テスト中...")
-    try:
-        tested_device, peak_level = test_pc_audio(
-            session_dir / ("Audio Test.wav" if english else "音声テスト.wav"),
-            language=language,
-        )
-    except Exception:
-        try:
-            session_dir.rmdir()
-        except OSError:
-            pass
-        raise
-    print(
-        f"PC audio test OK: {tested_device} (level {peak_level * 100:.1f}%)"
-        if english
-        else f"PC音声テスト OK: {tested_device}（レベル {peak_level * 100:.1f}%）"
-    )
 
     video_path: Path | None = None
     audio_ok = False
@@ -886,7 +971,7 @@ def record_audio(
         )
     session_name = (
         "Recording_Audio_" if english else "録音_"
-    ) + dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    ) + dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
     session_dir = output_root.expanduser().resolve() / session_name
     session_dir.mkdir(parents=True, exist_ok=False)
 
@@ -911,33 +996,16 @@ def record_audio(
         try:
             input(
                 "Start playing audio on the PC, then press Enter. "
-                "Recording will begin after a 3-second audio test..."
+                "Recording will begin immediately..."
                 if english
                 else "PCで音声を再生した状態にして、"
-                "Enterキーを押してください（3秒間の音声テスト後に録音開始）..."
+                "Enterキーを押すとすぐに録音を開始します..."
             )
         except (KeyboardInterrupt, EOFError) as exc:
             raise RuntimeError("Recording was cancelled." if english else "録音をキャンセルしました。") from exc
 
-    print("\nTesting PC audio for 3 seconds..." if english else "\nPC音声を3秒間テスト中...")
-    try:
-        tested_device, peak_level = test_pc_audio(
-            session_dir / ("Audio Test.wav" if english else "音声テスト.wav"),
-            language=language,
-        )
-    except Exception:
-        try:
-            session_dir.rmdir()
-        except OSError:
-            pass
-        raise
-    print(
-        f"PC audio test OK: {tested_device} (level {peak_level * 100:.1f}%)"
-        if english
-        else f"PC音声テスト OK: {tested_device}（レベル {peak_level * 100:.1f}%）"
-    )
-
     audio_ok = False
+    stop_error = None
     if control is not None:
         control.checkpoint()
     try:
@@ -999,6 +1067,7 @@ def record_audio(
             audio_ok = audio.stop()
         except Exception as exc:
             audio.close()
+            stop_error = exc
             audio_ok = _is_usable_wav(audio.output_path)
             if audio_ok:
                 print(
@@ -1023,8 +1092,16 @@ def record_audio(
     if _is_usable_wav(audio_path):
         with wave.open(os.fspath(audio_path), "rb") as saved:
             duration = saved.getnframes() / saved.getframerate()
-    if not audio_path.is_file():
-        raise RuntimeError("The recording audio was not created." if english else "録音音声ファイルが作成されませんでした。")
+    if not _is_usable_wav(audio_path):
+        if stop_error is not None:
+            raise RuntimeError(str(stop_error)) from stop_error
+        raise RuntimeError(
+            f"No audio data was received from the playback device: {audio.device_name}. "
+            "The empty recording cannot be transcribed."
+            if english else
+            f"再生デバイスから音声データを受信できませんでした: {audio.device_name}。"
+            "音声が入っていないため文字起こしを開始できません。"
+        )
     if duration < 0.5:
         raise RuntimeError("The recording is too short. Record for at least one second." if english else "録音時間が短すぎます。1秒以上録音してください。")
 

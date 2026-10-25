@@ -36,6 +36,15 @@ API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # Geminiモデル
 GEMINI_MODEL = "gemini-3.5-flash"
+TRANSCRIPTION_MAX_OUTPUT_TOKENS = 65536
+
+
+class TranscriptOutputLimitError(RuntimeError):
+    """An incomplete answer must never be published as a finished transcript."""
+
+    def __init__(self, message, partial_text=""):
+        super().__init__(message)
+        self.partial_text = partial_text
 
 # 録音設定（デバイスのデフォルトで録音し、保存時に変換する）
 SAMPLE_RATE = 44100
@@ -470,6 +479,8 @@ Instructions:
 - If the speech is English, transcribe it faithfully in English.
 - If the speech is in another language, translate it faithfully into natural English while preserving the meaning and order of the speech.
 - Use clear punctuation and paragraph breaks.
+- Transcribe from beginning to end without summarizing or shortening.
+- Preserve numbers, units, names, qualifications and negation exactly in meaning.
 - Do not add speaker labels such as "Speaker A" or any commentary.
 - Mark unintelligible portions as [inaudible].
 - Output only the full transcript.
@@ -490,12 +501,11 @@ Remove non-meaningful filler words such as "um", "uh", "erm", and repeated false
 - 話者を区別するためのラベル（例: 話者A、話者Bなど）は一切付けないでください。発言内容のみをそのまま記載してください。
 - 聞き取れない部分は [聞き取り不可] と記載してください。
 - 出力は文字起こしの全文テキストのみとしてください。余計な説明やコメントは不要です。
+- 冒頭から末尾まで、要約・省略せずに記載してください。数値、単位、固有名詞、条件、否定表現を保持してください。
 
-【重要】フィラー（つなぎ言葉）の除去:
-以下のような意味のないつなぎ言葉・フィラーは全て削除し、絶対に出力に含めないでください:
-「えー」「あのー」「あの」「まあ」「その」「なんか」「ええと」「うーん」「うん」「えっと」「まあね」
-「とか」「ほら」「ねー」「ね」「さー」「ま」「あー」「うー」「え」「お」
-文頭・文末・文中のどこにあっても削除してください。
+【フィラーの扱い】
+「えー」「えっと」など、意味のない言いよどみだけを除いてください。
+「その」「あの」「とか」なども意味のある発言の一部であれば残し、意味や事実を変えないでください。
 """
 
 
@@ -668,7 +678,8 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
     # thinking モデル用の設定（thinking_budget=0 で思考モードをOFFにし response.text が空になるのを防ぐ）
     from google.genai import types as genai_types
     gen_config = genai_types.GenerateContentConfig(
-        thinking_config=genai_types.ThinkingConfig(thinking_budget=0)
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        max_output_tokens=TRANSCRIPTION_MAX_OUTPUT_TOKENS,
     )
 
     def transcribe_once():
@@ -690,10 +701,17 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
                 except Exception as config_error:
                     if is_retryable_gemini_error(config_error):
                         raise
-                    # thinking_config に対応していないモデルだけconfigなしで再試行
+                    # Only omit unsupported thinking settings. Never silently
+                    # drop the long-transcript output budget on an API error.
+                    message = str(config_error).lower()
+                    if "thinking" not in message or not any(
+                            marker in message for marker in ("unsupported", "not supported", "unknown", "invalid", "not allowed")):
+                        raise
                     return client.models.generate_content(
                         model=model,
                         contents=[prompt, audio_file],
+                        config=genai_types.GenerateContentConfig(
+                            max_output_tokens=TRANSCRIPTION_MAX_OUTPUT_TOKENS),
                     )
             except Exception as exc:
                 last_error = exc
@@ -728,21 +746,29 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         return None, None
 
     elapsed = time.time() - start_time
-    print(
-        f"Transcription complete! (processing time: {elapsed:.1f} seconds)"
-        if english
-        else f"文字起こし完了！ (処理時間: {elapsed:.1f} 秒)"
-    )
 
     # response.text が None/空の場合、partsから直接テキストを取得する（thinking モデル対策）
     full_text = response.text
     if not full_text and response.candidates:
         parts_text = []
-        for part in response.candidates[0].content.parts:
+        content = getattr(response.candidates[0], "content", None)
+        for part in getattr(content, "parts", None) or []:
             if hasattr(part, 'text') and part.text and not getattr(part, 'thought', False):
                 parts_text.append(part.text)
         if parts_text:
             full_text = "".join(parts_text)
+
+    # Preserve usable plain text, but do not mistake an output-limited answer
+    # for a finished transcript or try to parse a cut-off JSON document.
+    for candidate in response.candidates or []:
+        reason = str(getattr(candidate, "finish_reason", "")).rsplit(".", 1)[-1]
+        if reason == "MAX_TOKENS":
+            cleanup_uploaded_audio()
+            raise TranscriptOutputLimitError(
+                "The transcript reached the output limit and is incomplete. Audio is preserved."
+                if english else "文字起こしが出力上限で途切れました。録音を保持します。途中の文章があれば未完了データとして保存します。",
+                partial_text=full_text.strip() if not timestamps and isinstance(full_text, str) else "",
+            )
 
     if not full_text or not full_text.strip():
         finish = response.candidates[0].finish_reason if response.candidates else "UNKNOWN"
@@ -765,10 +791,11 @@ def transcribe_with_gemini(audio_filepath, api_key, language=None, progress_call
         finally:
             cleanup_uploaded_audio()
 
-    # フィラー（つなぎ言葉）の後処理除去
-    full_text = remove_fillers(full_text, language="en" if english else "ja")
-
     cleanup_uploaded_audio()
+    print(
+        f"Transcription complete! (processing time: {elapsed:.1f} seconds)"
+        if english else f"文字起こし完了！ (処理時間: {elapsed:.1f} 秒)"
+    )
 
     return full_text, ""
 

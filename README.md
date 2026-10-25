@@ -8,11 +8,15 @@ A Windows desktop application that records or analyzes video, selects meaningful
 
 Windowsで動作する録画・動画解析・文字起こしツールです。PC内で重要な場面の候補を自動選別し、Gemini APIを活用して要約・文字起こし・画像解説をまとめたPDFレポートを生成します。
 
+この説明は `main` ブランチの最新版に対応しています。配布ZIPは各リリース時点の内容です。リリース前の修正を使う場合は [mainのソースZIP](https://github.com/dev-yoshitani/gemini-video-analyzer/archive/refs/heads/main.zip) をダウンロードしてください。
+
+This README describes the current `main` branch. Release ZIPs contain the code at their release date; use the [main source ZIP](https://github.com/dev-yoshitani/gemini-video-analyzer/archive/refs/heads/main.zip) for fixes not yet released.
+
 ## 新しい操作画面 / Desktop interface
 
-`Start.bat`（英語版は `Start_EN.bat`）からボタン操作の画面を開けます。「録画する」「録音して文字起こし」「動画を選ぶ」「結果を見る」で操作できます。「録音して文字起こし」はPCで再生される音声だけを録音し、停止後にGeminiへの送信確認を経て文字起こしPDFを作成します。画面やマイクの記録、画像解析は行いません。正常終了後は音声とPDFだけを保存します。音声圧縮にはFFmpegを利用し、利用できない場合はWAVを保存します。設定や再開手順は [操作ガイド](USAGE.md) をご覧ください。
+`Start.bat`（英語版は `Start_EN.bat`）からボタン操作の画面を開けます。「録画する」「録音して文字起こし」「動画を選ぶ」「音声を選ぶ」「結果を見る」で操作できます。「録音して文字起こし」はPCで再生される音声だけを録音し、停止後にGeminiへの送信確認を経て文字起こしPDFを作成します。画面やマイクの記録、画像解析は行いません。保存済みの音声は「音声を選ぶ」から、または起動バッチへのドラッグ＆ドロップで取り込めます。正常終了後は音声とPDFだけを保存します。設定や再開手順は [操作ガイド](USAGE.md) をご覧ください。
 
-Open the desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Record audio & transcribe**, **Choose video**, and **View results**. Audio transcription records PC playback only, not the screen or microphone, and asks for Gemini upload consent after stopping. No image analysis runs; successful jobs keep audio and a transcript PDF only. FFmpeg enables compressed audio, with WAV fallback when unavailable. See the [usage and recovery guide](USAGE.md).
+Open the desktop interface from `Start.bat` / `Start_EN.bat`. Use **Record**, **Record audio & transcribe**, **Choose video**, **Choose audio**, and **View results**. Audio transcription records PC playback only, not the screen or microphone, and asks for Gemini upload consent after stopping. Select an existing audio file or drop it onto the launcher to transcribe it without recording. No image analysis runs; successful audio-only jobs keep audio and a transcript PDF. See the [usage and recovery guide](USAGE.md).
 
 ---
 
@@ -51,14 +55,16 @@ The complete source video is not uploaded. The application sends the extracted a
 From [GitHub Releases](https://github.com/dev-yoshitani/gemini-video-analyzer/releases/latest), download `Gemini-Video-Analyzer-Windows-English.zip`, extract it, and install the included dependencies once with Python 3.10 or later.
 
 ### ✨ Features
-- **Audio recording and transcription**: Record PC playback without screen capture, then create a transcript PDF with Gemini after upload consent. Failed jobs can resume using completed transcript chunks.
-- **Ultra-efficient Audio Compression**: Compresses audio to Opus (32 kbps mono, `audio/ogg`) for Gemini Files API and M4A (48 kbps mono, `audio/m4a`) for local storage, reducing audio payload sizes by up to 98% (approx. 1/48th of original 48 kHz stereo WAV) with automatic duration integrity verification.
+- **Audio recording and transcription**: Record PC playback without screen capture, then create a transcript PDF with Gemini after upload consent. Existing WAV, MP3, M4A and other supported audio files can be imported; imported originals are not modified or deleted.
+- **Background transcription**: Once a recording is saved, start the next recording while the previous job is transcribing. Track jobs, open results and stop individual analyses from the job list. Only one recording runs at a time.
+- **Lightweight recording**: Captures at the device-native format but saves at up to 16 kHz, mono, 16-bit during recording. This is about one-sixth the PCM data of 48 kHz stereo. FFmpeg enables Opus uploads and M4A storage, with WAV fallback and duration checks.
+- **Whole-audio transcription**: Audio is not split into one-minute API requests. Audio-only jobs request plain text rather than timestamp JSON and set a larger output budget. Provider output limits still apply; output-limited plain text is retained as explicitly incomplete, not published as a finished PDF.
 - **Real-time System Audio Recording**: Captures computer internal audio using WASAPI loopback.
-- **Pre-recording Audio Test**: Checks the actual system-audio level for three seconds before screen recording begins.
+- **Immediate recording**: Starts without a pre-recording audio test. The desktop interface displays audio level and warns about prolonged silence while recording.
 - **Gemini transcription and analysis**: Uses `gemini-3.5-flash`, with automatic fallback to `gemini-2.5-flash` and `gemini-3.1-flash-lite` when the primary model is rate-limited or busy.
 - **Automatic Rate-limit Recovery**: Waits and retries automatically for temporary 429/503 errors. Completed stages and images are reused after interruption.
 - **Video Key Slide Extraction**: Automatically extracts important slides, charts, and documents from recorded videos using Gemini's vision capabilities.
-- **Filler Word Removal**: Automatically strips out filler words (e.g., "uhm", "uh", "like") and resolves hallucinated repetitions.
+- **Meaning-preserving transcription instructions**: Requests removal of meaningless hesitations while preserving meaningful words, numbers and negation. Transcripts still require review.
 - **Clean PDF Output**: Keeps the original recording, captured PC audio, and the formatted PDF. Temporary images and analysis files are removed after success.
 
 ### 🛠️ Initial Setup: Get Gemini API Key
@@ -147,13 +153,16 @@ py -3 -m pip install -r requirements-app.txt
 #### 1. アプリの起動
 `Start.bat` をダブルクリックして起動します。ボタン操作のデスクトップ画面が開きます。
 
-- **録画する**: 録画範囲（「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」）を選び、3秒間の音声テストを経て録画を開始します。録画終了後、内容の確認を経てAI解析とPDFレポート生成へ進みます。
+- **録画する**: 録画範囲（「すべての画面」「モニターを1台選ぶ」「マウスで範囲指定」）を選び、事前の音声テストなしで録画を開始します。録画終了後、内容の確認を経てAI解析とPDFレポート生成へ進みます。
 - **録音して文字起こし**: PCで再生される音声だけを記録します。「録音を終了して文字起こし」を押し、送信確認で「はい」を選ぶと、Geminiで文字起こしPDFを作成します。画面やマイクの記録、画像解析は行いません。
+- **音声を選ぶ**: 保存済みのWAV・MP3・M4Aなどを文字起こしします。音声ファイルを `Start.bat` にドラッグ＆ドロップしても起動できます。元音声は変更・削除せず、ファイル名ごとの結果フォルダへPDFを保存します。
 - **動画を選ぶ**: 保存済みの動画ファイルを選択してAI解析を行います。動画ファイルを `Start.bat` に直接ドラッグ＆ドロップして解析することも可能です。
 - **結果を見る**: 作成されたPDFレポートや保存先フォルダを素早く開きます。
 
 #### 2. 中断と途中再開
 処理中に一時的なAPI制限（429エラー等）や混雑を検知した場合は、待機時間を調整しながら自動で再試行します。途中でアプリを終了した場合でも、完了済みの文字起こしや画像解析データが保存されているため、次回起動時に「未完了一覧」から続きを安全に再開できます。
+
+録音の保存が完了したら、前の文字起こし中も「録音して文字起こし」から次を開始できます。録音は同時に1件だけ行い、解析の進捗・結果・中断はバックグラウンド解析一覧で個別に扱います。文字起こし自体が失敗した場合は、再開時に音声全体を再処理することがあります。
 
 #### 3. 保存先と出力ファイル
 録画セッションが完了すると、成果物は `output/local_recordings/録画_<日時>/` に保存されます。
@@ -179,14 +188,17 @@ PDFレポートの完成後、抽出に使用した一時的な中間画像や�
 
 ### ✨ 主な機能
 
-- **PC音声の録音と文字起こし**: 画面を録画せずPC内部音声のみを記録し、送信確認後にGeminiで文字起こしPDFを作成します。失敗時は完了済みの文字起こし区間を再利用して再開できます。
-- **高効率な音声圧縮（最大約98%削減）**: 元のWAV音声から、Gemini送信用にOpus（32 kbps mono、`audio/ogg`）、ローカル保存用にM4A（48 kbps mono、`audio/m4a`）を直接生成。元ファイル比で最大98%（約1/48）削減し、再生時間の整合性検証に合格した後にのみ元ファイルを安全に置き換えます。
+- **PC音声の録音と文字起こし**: 画面を録画せずPC内部音声のみを記録し、送信確認後にGeminiで文字起こしPDFを作成します。完了済みの文字起こしは、PDF作成の再開時に再利用します。
+- **保存済み音声の取り込み**: WAV・MP3・M4Aなどの音声ファイルを選択、または起動バッチへドラッグ＆ドロップして文字起こしできます。元ファイルは保持します。
+- **文字起こしと次の録音を並行**: 保存済みの記録を解析している間も、次の録音を開始できます。進捗や結果を処理ごとに確認できます。
+- **録音中から軽量保存**: WASAPIデバイスの取り込み設定は保ち、保存する音声を最大16kHz・モノラル・16bitへ変換します。48kHz・ステレオのPCM音声と比べて容量は約6分の1です。FFmpegが利用できる場合は送信用Opus・保存用M4Aへ圧縮し、利用できない場合はWAVを保存します。
+- **一括文字起こしと長文への対応**: 音声を1分ごとのAPIリクエストには分割しません。音声のみの場合は時刻付きJSONを要求せず、通常の文章で受け取り、長文向けの出力枠を設定します。APIの出力上限に達した場合は、途中の文章を未完了と明記して保存し、完成したPDFとしては扱いません。
 - **クリアなPCシステム音声録音**: WASAPIループバック録音を採用し、オンライン会議や動画の音声をノイズなく直接キャプチャ。
-- **録画前の音声テスト**: 録画開始前にPCの再生音声を3秒間チェックし、無音やオーディオデバイスの不調に気づかないまま録画してしまうミスを防止。
+- **事前テストなしで開始**: 録音・録画前の音声テストは行いません。操作画面では記録中の音量を表示し、無音が続く場合に警告します。
 - **Geminiによる高精度な文字起こし・解析**: 高速・高精度な `gemini-3.5-flash` を標準採用。混雑時や利用制限時には `gemini-2.5-flash` や `gemini-3.1-flash-lite` へ自動で切り替えて処理を継続。
-- **API制限からの自動復旧**: 429や503などの一時的エラーを検知すると指数バックオフで自動再試行。中断時も完了済みの文字起こしや画像解析を再利用し、重複課金や無駄な処理を防ぎます。
+- **API制限からの自動復旧**: 429や503などの一時的エラーを検知すると待機して自動再試行します。完了済みの文字起こしや画像解析は再利用しますが、再試行による追加リクエストや料金が発生する場合があります。
 - **動画キースライドの自動抽出**: 会議や授業の録画動画から、重要なスライド・図表・資料をGeminiの視覚解析で自動抽出。発言内容と統合した見やすい議事録PDFを生成。
-- **つなぎ言葉（フィラー）とループの自動除去**: 「えーっと」「あのー」などの不要なつなぎ言葉を自動で取り除き、同じ言葉が連続するループ現象（ハルシネーション）も自動で整理。
+- **意味を保つ文字起こし指示**: 意味のない言いよどみだけを除き、意味のある発言・数値・否定表現は保持するようモデルへ指示します。生成結果の確認は必要です。
 - **整理されたPDF出力**: 処理完了後は画面録画、PC音声、要約タイトルが付いたPDFレポートのみを残し、中間画像や解析用作業ファイルを自動削除。
 
 このプロジェクトが役に立ちましたら、ぜひGitHubで Star（⭐）をお願いします！

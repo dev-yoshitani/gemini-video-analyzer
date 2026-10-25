@@ -92,6 +92,29 @@ def transcribe_chunks(audio, api_key, destination, transcribe, *, language="ja",
     return "\n".join(item["text"] for item in segments), segments
 
 
+def transcribe_whole(audio, api_key, transcribe, *, language="ja", max_audio_minutes=120,
+                     timestamps=True):
+    """Send the original audio once, without creating or uploading timed chunks."""
+    checkpoint()
+    with wave.open(os.fspath(audio), "rb") as source:
+        duration = source.getnframes() / source.getframerate()
+    if duration <= 0 or max_audio_minutes < 1:
+        raise ValueError("Audio is empty or the limit is invalid / 音声が空、または上限が不正です")
+    if duration > max_audio_minutes * 60:
+        raise ValueError("Audio exceeds the configured limit / 音声時間が設定した上限を超えています")
+    text, segments = transcribe(os.fspath(audio), api_key, language=language,
+                                timestamps=timestamps, duration_seconds=duration)
+    if segments is None or not isinstance(text, str) or not text.strip():
+        raise RuntimeError("Transcription failed / 文字起こしに失敗しました")
+    if not timestamps:
+        return text, []  # Audio-only PDFs need no fragile utterance-level JSON.
+    # Compatibility for injected/legacy adapters without fine timestamps.
+    if segments == "":
+        segments = [{"start": 0, "end": duration, "text": text}]
+    validate_segments(segments, duration)
+    return text, segments
+
+
 def scene_context(segments, start, end, previous="", language="ja"):
     relevant = [item for item in segments if item["end"] > max(0, start - 15)
                 and item["start"] < end + 15]

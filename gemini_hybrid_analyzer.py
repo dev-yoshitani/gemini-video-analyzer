@@ -420,7 +420,7 @@ def analyze_with_gemini(
     language: str = "ja",
     max_audio_minutes: int = 120,
 ) -> dict[str, Any]:
-    from timeline_analysis import transcribe_chunks
+    from timeline_analysis import transcribe_whole
     from workflow_control import checkpoint, notify
     from audio_transcriber import (
         GEMINI_MODEL,
@@ -634,8 +634,8 @@ def analyze_with_gemini(
         else:
             _set_stage(state_path, state, "文字起こし")
             print("\n[3/5] Creating a high-accuracy English transcript with Gemini..." if english else "\n[3/5] Geminiで高精度文字起こし中...")
-            transcript, timeline = transcribe_chunks(
-                prepared_audio, api_key, chunks_dir, transcribe_with_gemini,
+            transcript, timeline = transcribe_whole(
+                prepared_audio, api_key, transcribe_with_gemini,
                 language=language, max_audio_minutes=max_audio_minutes,
             )
             transcript = (transcript or "").strip()
@@ -840,6 +840,7 @@ def resume_analysis(
             source, output_dir=path.parent, require_consent=require_consent,
             language=language,
             max_audio_minutes=max_audio_minutes if max_audio_minutes is not None else int(options.get("max_audio_minutes", 120)),
+            preserve_source=bool(options.get("preserve_source", False)),
         )
     return analyze_with_gemini(
         source,
@@ -860,11 +861,13 @@ def transcribe_audio_only(
     language: str = "ja",
     max_audio_minutes: int = 120,
     require_consent: bool = True,
+    preserve_source: bool = False,
 ) -> dict[str, Any]:
     """PC音声の文字起こしと議事録PDF生成（画像解析なし）。"""
-    from timeline_analysis import transcribe_chunks
+    from timeline_analysis import transcribe_whole
     from workflow_control import checkpoint, notify
     from audio_transcriber import (
+        TranscriptOutputLimitError,
         create_pdf,
         generate_title_from_text,
         transcribe_with_gemini,
@@ -873,6 +876,8 @@ def transcribe_audio_only(
     language = "en" if language == "en" else "ja"
     english = language == "en"
     source_audio = Path(audio_path).expanduser().resolve()
+    # Non-WAV inputs are imported media, never recordings owned by this app.
+    preserve_source = preserve_source or source_audio.suffix.lower() != ".wav"
     if not source_audio.is_file():
         raise FileNotFoundError(
             f"Audio file not found: {source_audio}"
@@ -881,7 +886,10 @@ def transcribe_audio_only(
         )
 
     if output_dir is None:
-        destination = source_audio.parent / ("Analysis Results" if english else "文字起こし結果")
+        folder_name = "Analysis Results" if english else "文字起こし結果"
+        if preserve_source:
+            folder_name = f"{source_audio.name}_{folder_name}"
+        destination = source_audio.parent / folder_name
     else:
         destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
@@ -897,16 +905,34 @@ def transcribe_audio_only(
         _validate_source_identity(source_audio, state["source"], language)
         if state["options"].get("language") != language:
             raise ValueError("Resume using the saved language / 保存時の言語で再開してください")
+        preserve_source = preserve_source or bool(state["options"].get("preserve_source", False))
     else:
         state = {"version": STATE_VERSION, "job_type": "audio_transcribe",
                  "source": _source_identity(source_audio), "completed_stages": [],
-                 "options": {"language": language, "max_audio_minutes": max_audio_minutes},
+                 "options": {"language": language, "max_audio_minutes": max_audio_minutes,
+                             "preserve_source": preserve_source},
                  "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+    state["options"]["preserve_source"] = preserve_source
     try:
         _set_stage(state_path, state, "音声準備")
-        # This workflow records WAV. Validate duration before any Gemini request.
-        with wave.open(os.fspath(source_audio), "rb") as audio_info:
-            audio_duration = audio_info.getnframes() / audio_info.getframerate()
+        prepared_audio = source_audio
+        intermediate_audio = destination / ".input_audio.wav"
+        if intermediate_audio.resolve() == source_audio:
+            raise ValueError("The input must not be the temporary audio / 元音声と一時音声は別のファイルにしてください")
+        try:
+            with wave.open(os.fspath(source_audio), "rb") as audio_info:
+                audio_duration = audio_info.getnframes() / audio_info.getframerate()
+        except (wave.Error, EOFError):
+            # PyAV handles MP3, M4A, FLAC and other audio codecs locally.
+            prepared_audio = extract_audio_locally(source_audio, intermediate_audio, language)
+            with wave.open(os.fspath(prepared_audio), "rb") as audio_info:
+                audio_duration = audio_info.getnframes() / audio_info.getframerate()
+        else:
+            if preserve_source:
+                # Upload compression writes temporary siblings. Keep all of them
+                # in our result folder, away from the user's original media.
+                shutil.copyfile(source_audio, intermediate_audio)
+                prepared_audio = intermediate_audio
         if audio_duration <= 0 or max_audio_minutes < 1:
             raise ValueError("Audio is empty or the limit is invalid / 音声が空、または上限が不正です")
         if audio_duration > max_audio_minutes * 60:
@@ -921,9 +947,9 @@ def transcribe_audio_only(
         if "文字起こし" in state["completed_stages"] and transcript_path.is_file():
             transcript = _read_json(transcript_path)["text"]
         else:
-            transcript, timeline = transcribe_chunks(
-                source_audio, api_key, chunks_dir, transcribe_with_gemini,
-                language=language, max_audio_minutes=max_audio_minutes,
+            transcript, timeline = transcribe_whole(
+                prepared_audio, api_key, transcribe_with_gemini,
+                language=language, max_audio_minutes=max_audio_minutes, timestamps=False,
             )
             transcript = (transcript or "").strip()
             if not transcript:
@@ -943,27 +969,47 @@ def transcribe_audio_only(
         pdf_path = destination / (
             f"{title}_Transcription_Report.pdf" if english else f"{title}_文字起こしレポート.pdf"
         )
+        display_audio_name = "PC Audio.wav" if english and not preserve_source else source_audio.name
         _publish_pdf(
             create_pdf, pdf_path, full_text=transcript, timestamped_text="",
-            audio_filename=("PC Audio.wav" if english else source_audio.name),
+            audio_filename=display_audio_name,
             key_slides=None, document_title=title, language=language,
         )
         # The verified PDF must exist before compressing or removing source audio.
         from audio_compression import prepare_storage_audio
         saved_storage_audio = source_audio
-        try:
-            saved_storage_audio = prepare_storage_audio(source_audio, delete_source_on_success=True)
-        except OSError as exc:
-            print(f"Audio compression skipped / 音声圧縮を省略: {exc}")
+        if not preserve_source:
+            try:
+                saved_storage_audio = prepare_storage_audio(source_audio, delete_source_on_success=True)
+            except OSError as exc:
+                print(f"Audio compression skipped / 音声圧縮を省略: {exc}")
         result = {"success": True, "resumed": resumed, "output_dir": str(destination),
                   "pdf": str(pdf_path), "audio": str(saved_storage_audio),
                   "transcript_chars": len(transcript), "mode": "audio_transcribe"}
         _remove_pending_job(destination)
-        _cleanup_completed_analysis(destination, pdf_path, transcript_path, chunks_dir, language=language)
+        partials = [Path(path) for path in state.get("partial_transcripts", [])
+                    if isinstance(path, str) and Path(path).name.startswith(
+                        ("Incomplete_Transcript_", "未完了の文字起こし_"))]
+        _cleanup_completed_analysis(destination, pdf_path, transcript_path, chunks_dir,
+                                    intermediate_audio, *partials, language=language)
         print(f"\nAudio transcription complete.\nPDF: {pdf_path}" if english
               else f"\n音声の文字起こしが完了しました。\nPDF: {pdf_path}")
         return result
     except (Exception, KeyboardInterrupt) as exc:
+        if isinstance(exc, TranscriptOutputLimitError) and exc.partial_text:
+            try:
+                prefix = "Incomplete_Transcript_" if english else "未完了の文字起こし_"
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination,
+                                                 prefix=prefix, suffix=".txt", delete=False) as partial:
+                    partial.write(("INCOMPLETE: generation reached the output limit.\n\n" if english else
+                                   "【未完了】出力上限で途切れた途中の文字起こしです。全文ではありません。\n\n")
+                                  + exc.partial_text)
+                    partial_path = partial.name
+                state.setdefault("partial_transcripts", []).append(partial_path)
+                print(("Incomplete transcript saved: " if english else "途中の文字起こしを保存しました: ")
+                      + partial_path)
+            except OSError:
+                pass  # Preserve the original provider error and recording.
         state["status"] = "interrupted"
         state["last_error"] = str(exc) or exc.__class__.__name__
         _write_json_atomic(state_path, state)

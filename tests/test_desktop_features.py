@@ -23,6 +23,55 @@ def write_wav(path, seconds=3, rate=100):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_whole_transcription_sends_fifteen_minutes_once_without_progress_chunks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "recording.wav"
+            write_wav(source, 900)
+            segments = [{"start": 0, "end": 900, "text": "all speech"}]
+            transcribe = mock.Mock(return_value=("all speech", segments))
+            with mock.patch.object(timeline, "notify") as notify:
+                text, result = timeline.transcribe_whole(source, "fake", transcribe)
+            transcribe.assert_called_once_with(str(source), "fake", language="ja",
+                                               timestamps=True, duration_seconds=900)
+            self.assertEqual((text, result), ("all speech", segments))
+            self.assertEqual(list(Path(directory).iterdir()), [source])
+            notify.assert_not_called()
+
+    def test_whole_transcription_rejects_over_limit_before_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "recording.wav"
+            write_wav(source, 61)
+            transcribe = mock.Mock()
+            with self.assertRaises(ValueError):
+                timeline.transcribe_whole(source, "fake", transcribe, max_audio_minutes=1)
+            transcribe.assert_not_called()
+
+    def test_whole_transcription_rejects_invalid_result_and_preserves_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "recording.wav"
+            write_wav(source, 3)
+            for response in ((None, None), ("text", [{"start": 0, "end": 100, "text": "x"}])):
+                with self.subTest(response=response), self.assertRaises((RuntimeError, ValueError)):
+                    timeline.transcribe_whole(source, "fake", mock.Mock(return_value=response))
+            self.assertTrue(source.is_file())
+
+    def test_output_limit_is_not_published_as_complete_and_remote_file_is_deleted(self):
+        import audio_transcriber
+        client = mock.Mock()
+        client.files.upload.return_value = SimpleNamespace(name="files/test", state=SimpleNamespace(name="ACTIVE"))
+        client.models.generate_content.return_value = SimpleNamespace(
+            text='[{"start":0,"end":1,"text":"partial"}]',
+            candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")])
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "audio.wav"
+            write_wav(source, 2)
+            with mock.patch("google.genai.Client", return_value=client), mock.patch.object(
+                    audio_transcriber, "compress_audio_for_upload", return_value=(str(source), False)):
+                with self.assertRaisesRegex(RuntimeError, "出力上限"):
+                    audio_transcriber.transcribe_with_gemini(str(source), "fake", timestamps=True, duration_seconds=2)
+            self.assertTrue(source.exists())
+        client.files.delete.assert_called_once_with(name="files/test")
+
     def test_timed_api_transcription_preserves_negation_and_cleans_remote_file(self):
         import audio_transcriber
         client = mock.Mock()
@@ -167,19 +216,16 @@ class RecordingRecoveryTests(unittest.TestCase):
             audio.chunk_path = audio.parts_dir / "audio_00000.wav"
             audio.wave_file = wave.open(str(audio.chunk_path), "wb")
             audio.wave_file.setparams((1, 2, 100, 0, "NONE", "not compressed"))
-            calls = 0
-            def read(*args, **kwargs):
-                nonlocal calls
-                calls += 1
-                if calls <= 2:
-                    audio.pause_event.set()
-                else:
-                    audio.pause_event.clear()
-                if calls == 5:
-                    audio.stop_event.set()
-                return b"\x01\x00" * 2
+            audio._callback_continue, audio._callback_complete, audio._callback_abort = 0, 1, 2
+            audio._input_overflow = 2
+            audio.pause_event.set()
+            for _ in range(2):
+                audio._audio_callback(b"\x01\x00" * 2, 2, {}, 0)
+            audio.pause_event.clear()
+            for _ in range(3):
+                audio._audio_callback(b"\x01\x00" * 2, 2, {}, 0)
             audio.stream = mock.Mock()
-            audio.stream.read.side_effect = read
+            audio.stop_event.set()
             audio._worker()
             self.assertTrue(audio.stop())
             with wave.open(str(audio.output_path), "rb") as saved:
@@ -282,11 +328,39 @@ class DesktopTests(unittest.TestCase):
                             collect(child)
                     collect(root)
                     self.assertIn(button, texts)
+                    self.assertIn("音声を選ぶ" if language == "ja" else "Choose audio", texts)
                     self.assertFalse(any("録音だけ保存" in t or "Save Audio Only" in t for t in texts))
                     app.api_key = "fake-test-key"
-                    with mock.patch("subprocess.Popen"), mock.patch("threading.Thread"):
+                    with mock.patch("subprocess.Popen") as spawn, mock.patch("threading.Thread"):
+                        spawn.return_value.poll.return_value = None
                         app.start("record_audio_transcribe")
                     self.assertEqual(str(app.stop_button["text"]), stop)
+                    self.assertEqual(str(app.stop_button["state"]), "normal")
+                    # Even before the first worker notification, the button sends stop.
+                    app.stop_button.invoke()
+                    self.assertIn('{"command": "stop"}', spawn.return_value.stdin.write.call_args.args[0])
+                    self.assertTrue(app.finishing)
+                    self.assertEqual(str(app.stop_button["state"]), "disabled")
+                    previous = app.process
+                    app.events.put((previous, desktop_app.EVENT_PREFIX + json.dumps({
+                        "kind": "saved_recording", "audio": "previous/PC Audio.wav"})))
+                    app.poll()
+                    self.assertTrue(app.busy())
+                    self.assertFalse(app.recording_busy())
+                    with mock.patch("subprocess.Popen") as spawn, mock.patch("threading.Thread"):
+                        spawn.return_value.poll.return_value = None
+                        app.start("record_audio_transcribe")
+                    current = app.process
+                    self.assertIsNot(current, previous)
+                    self.assertEqual(app.worker_list.size(), 2)
+                    app.events.put((previous, desktop_app.EVENT_PREFIX + json.dumps({
+                        "kind": "complete", "result": {"pdf": "previous.pdf"}})))
+                    with mock.patch("timeline_analysis.atomic_json"):
+                        app.poll()
+                    self.assertTrue(app.recording)
+                    self.assertEqual(str(app.stop_button["state"]), "normal")
+                    app.stop_button.invoke()
+                    self.assertIn('{"command": "stop"}', current.stdin.write.call_args.args[0])
         finally:
             root.destroy()
 

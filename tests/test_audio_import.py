@@ -121,7 +121,9 @@ class ImportedAudioSafetyTests(unittest.TestCase):
         self.assertNotEqual(uploaded, source)
         self.assertEqual(uploaded.parent, Path(result["output_dir"]))
         self.assertFalse(uploaded.exists(), "Remove only our normalized intermediate after success")
-        self.assertEqual(result["audio"], str(source))
+        # Windows may expand TEMP's 8.3 alias (RUNNER~1) to its long name.
+        # Verify file identity rather than an environment-specific spelling.
+        self.assertTrue(Path(result["audio"]).samefile(source))
         self.assertTrue(Path(result["pdf"]).exists())
         return result
 
